@@ -4,9 +4,9 @@ import axios from "axios";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-/* ================== CONFIG (PRUEBAS) ================== */
+/* ===== CONFIG PRUEBAS ===== */
 
-// ⚠️ SOLO PARA PRUEBAS – NO USAR ASÍ EN PRODUCCIÓN
+// ⚠️ SOLO PRUEBAS
 const KOBO_TOKEN = "f295306d3c5728fc520bb928e40530d034f71100";
 const ASSET_UID = "aU7Ss6syzzmPJBACQobF4Q";
 
@@ -15,7 +15,7 @@ const DOLIBARR_API_KEY = "quk5j73GFHUL0F1vZk5l6PhR4t4D8Vvr";
 
 const KOBO_URL = `https://kf.kobotoolbox.org/api/v2/assets/${ASSET_UID}/data/`;
 
-/* ===================================================== */
+/* ========================= */
 
 const dolibarr = axios.create({
   baseURL: DOLIBARR_API_URL,
@@ -26,7 +26,7 @@ const dolibarr = axios.create({
   timeout: 15000
 });
 
-/* ================== FUNCIONES ================== */
+/* ===== FUNCIONES ===== */
 
 async function getKoboSubmissions() {
   const res = await axios.get(KOBO_URL, {
@@ -49,20 +49,20 @@ async function findTicketByRef(ref) {
 }
 
 /**
- * ✅ FORMA CORRECTA DE CERRAR TICKET EN DOLIBARR
- * Usa el workflow interno (NO PUT directo)
+ * ✅ FORMA CORRECTA (WORKFLOW DOLIBARR)
+ * Estado 8 = Cerrado
  */
 async function closeTicket(ticketId) {
   await dolibarr.post(
     `/tickets/${ticketId}/setstatus`,
     null,
     {
-      params: { fk_statut: 8 }
+      params: { status: 8 }
     }
   );
 }
 
-/* ================== ENDPOINTS ================== */
+/* ===== ENDPOINTS ===== */
 
 app.get("/", (req, res) => {
   res.send("KoBo → Dolibarr service running");
@@ -87,21 +87,17 @@ app.get("/run", async (req, res) => {
       closed++;
     }
 
-    res.json({
-      status: "OK",
-      processed,
-      closed
-    });
+    res.json({ status: "OK", processed, closed });
 
   } catch (err) {
     res.status(500).json({
       status: "ERROR",
-      message: err.message
+      message: err.response?.data || err.message
     });
   }
 });
 
-/* ================== START ================== */
+/* ===== START ===== */
 
 app.listen(PORT, () => {
   console.log(`Service listening on port ${PORT}`);
