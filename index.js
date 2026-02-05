@@ -6,7 +6,7 @@ const PORT = 8080;
 
 /* ================== CONFIG (PRUEBAS) ================== */
 
-// ⚠️ SOLO PARA PRUEBAS
+// ⚠️ SOLO PARA PRUEBAS – NO USAR ASÍ EN PRODUCCIÓN
 const KOBO_TOKEN = "f295306d3c5728fc520bb928e40530d034f71100";
 const ASSET_UID = "aU7Ss6syzzmPJBACQobF4Q";
 
@@ -40,97 +40,64 @@ const dolibarr = axios.create({
 async function getKoboSubmissions() {
   console.log("------ KOBO FETCH START ------");
 
-  try {
-    const res = await axios.get(KOBO_URL, {
-      headers: {
-        Authorization: `Token ${KOBO_TOKEN}`
-      },
-      timeout: 20000
-    });
+  const res = await axios.get(KOBO_URL, {
+    headers: { Authorization: `Token ${KOBO_TOKEN}` },
+    timeout: 20000
+  });
 
-    console.log("[KOBO] HTTP STATUS:", res.status);
-    console.log("[KOBO] COUNT:", res.data?.count);
-    console.log("[KOBO] RESULTS TYPE:", typeof res.data?.results);
+  console.log("[KOBO] HTTP STATUS:", res.status);
+  console.log("[KOBO] COUNT:", res.data?.count);
 
-    if (!Array.isArray(res.data.results)) {
-      console.error("[KOBO] results is NOT an array");
-      return [];
-    }
-
-    console.log("[KOBO] FIRST ITEM SAMPLE:", res.data.results[0]);
-    console.log("------ KOBO FETCH END ------");
-
-    return res.data.results;
-  } catch (err) {
-    console.error("[KOBO] ERROR REQUESTING DATA");
-    console.error("[KOBO] MESSAGE:", err.message);
-    if (err.response) {
-      console.error("[KOBO] RESPONSE STATUS:", err.response.status);
-      console.error("[KOBO] RESPONSE DATA:", err.response.data);
-    }
-    throw err;
+  if (!Array.isArray(res.data.results)) {
+    console.error("[KOBO] results is NOT an array");
+    return [];
   }
+
+  console.log("[KOBO] FIRST ITEM SAMPLE:", res.data.results[0]);
+  console.log("------ KOBO FETCH END ------");
+
+  return res.data.results;
 }
 
 async function findTicketByRef(ref) {
   console.log("------ DOLIBARR SEARCH START ------");
   console.log("[DOLIBARR] Searching ticket ref:", ref);
 
-  try {
-    const res = await dolibarr.get("/tickets", {
-      params: {
-        sqlfilters: `(t.ref:=:${ref})`
-      }
-    });
-
-    console.log("[DOLIBARR] HTTP STATUS:", res.status);
-    console.log("[DOLIBARR] RAW RESPONSE:", res.data);
-
-    if (!Array.isArray(res.data) || res.data.length === 0) {
-      console.warn("[DOLIBARR] Ticket NOT found:", ref);
-      return null;
+  const res = await dolibarr.get("/tickets", {
+    params: {
+      sqlfilters: `(t.ref:=:${ref})`
     }
+  });
 
-    console.log("[DOLIBARR] Ticket FOUND:", res.data[0]);
-    console.log("------ DOLIBARR SEARCH END ------");
+  console.log("[DOLIBARR] HTTP STATUS:", res.status);
+  console.log("[DOLIBARR] RAW RESPONSE:", res.data);
 
-    return res.data[0];
-  } catch (err) {
-    console.error("[DOLIBARR] ERROR SEARCHING TICKET");
-    console.error(err.message);
-    if (err.response) {
-      console.error(err.response.data);
-    }
-    throw err;
+  if (!Array.isArray(res.data) || res.data.length === 0) {
+    console.warn("[DOLIBARR] Ticket NOT found:", ref);
+    return null;
   }
+
+  console.log("[DOLIBARR] Ticket FOUND:", res.data[0]);
+  console.log("------ DOLIBARR SEARCH END ------");
+
+  return res.data[0];
 }
 
 async function closeTicket(ticketId, ref) {
-  console.log("------ DOLIBARR SETSTATUS START ------");
-  console.log(`[DOLIBARR] Closing ticket REF=${ref} ID=${ticketId}`);
-  console.log("[DOLIBARR] Endpoint:", `/tickets/${ticketId}/setstatus?status=8`);
+  console.log("------ DOLIBARR UPDATE START ------");
+  console.log(`[DOLIBARR] Updating fk_statut=8 for ticket REF=${ref} ID=${ticketId}`);
+  console.log("[DOLIBARR] Endpoint:", `/tickets/${ticketId}`);
 
-  try {
-    const res = await dolibarr.post(
-      `/tickets/${ticketId}/setstatus`,
-      null,
-      {
-        params: { status: 8 }
-      }
-    );
-
-    console.log("[DOLIBARR] HTTP STATUS:", res.status);
-    console.log("[DOLIBARR] RESPONSE:", res.data);
-    console.log("------ DOLIBARR SETSTATUS END ------");
-  } catch (err) {
-    console.error("[DOLIBARR] ERROR SETTING STATUS");
-    console.error(err.message);
-    if (err.response) {
-      console.error("[DOLIBARR] RESPONSE STATUS:", err.response.status);
-      console.error("[DOLIBARR] RESPONSE DATA:", err.response.data);
+  const res = await dolibarr.put(
+    `/tickets/${ticketId}`,
+    {
+      fk_statut: 8
     }
-    throw err;
-  }
+  );
+
+  console.log("[DOLIBARR] HTTP STATUS:", res.status);
+  console.log("[DOLIBARR] RESPONSE:", res.data);
+  console.log("------ DOLIBARR UPDATE END ------");
 }
 
 /* ================== ENDPOINTS ================== */
