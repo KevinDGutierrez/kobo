@@ -6,7 +6,6 @@ const PORT = process.env.PORT || 8080;
 
 /* ===== CONFIG PRUEBAS ===== */
 
-// ⚠️ SOLO PRUEBAS
 const KOBO_TOKEN = "f295306d3c5728fc520bb928e40530d034f71100";
 const ASSET_UID = "aU7Ss6syzzmPJBACQobF4Q";
 
@@ -32,43 +31,32 @@ async function getKoboSubmissions() {
   const res = await axios.get(KOBO_URL, {
     headers: { Authorization: `Token ${KOBO_TOKEN}` }
   });
-
   return Array.isArray(res.data.results) ? res.data.results : [];
 }
 
 async function findTicketByRef(ref) {
   const res = await dolibarr.get("/tickets", {
-    params: {
-      sqlfilters: `(t.ref:=:${ref})`
-    }
+    params: { sqlfilters: `(t.ref:=:${ref})` }
   });
-
-  return Array.isArray(res.data) && res.data.length > 0
-    ? res.data[0]
-    : null;
+  return res.data?.length ? res.data[0] : null;
 }
 
 /**
- * ✅ FORMA CORRECTA (WORKFLOW DOLIBARR)
- * Estado 8 = Cerrado
+ * ✅ ÚNICA FORMA VÁLIDA EN TU DOLIBARR
  */
 async function closeTicket(ticketId) {
-  await dolibarr.post(
-    `/tickets/${ticketId}/setstatus`,
-    null,
-    {
-      params: { fk_statut: 8 }
-    }
-  );
+  await dolibarr.put(`/tickets/${ticketId}`, {
+    status: 8
+  });
 }
 
 /* ===== ENDPOINTS ===== */
 
-app.get("/", (req, res) => {
+app.get("/", (_, res) => {
   res.send("KoBo → Dolibarr service running");
 });
 
-app.get("/run", async (req, res) => {
+app.get("/run", async (_, res) => {
   let processed = 0;
   let closed = 0;
 
@@ -77,7 +65,6 @@ app.get("/run", async (req, res) => {
 
     for (const s of submissions) {
       processed++;
-
       if (!s.ticket_ref) continue;
 
       const ticket = await findTicketByRef(s.ticket_ref);
@@ -88,7 +75,6 @@ app.get("/run", async (req, res) => {
     }
 
     res.json({ status: "OK", processed, closed });
-
   } catch (err) {
     res.status(500).json({
       status: "ERROR",
