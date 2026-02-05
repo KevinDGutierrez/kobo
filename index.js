@@ -17,128 +17,167 @@ const KOBO_URL = `https://kf.kobotoolbox.org/api/v2/assets/${ASSET_UID}/data/`;
 
 /* ===================================================== */
 
+/* ================== BOOT LOGS ================== */
 console.log("========== BOOT ==========");
 console.log("[BOOT] Service starting...");
-console.log("[BOOT] KOBO_TOKEN:", KOBO_TOKEN);
-console.log("[BOOT] ASSET_UID:", ASSET_UID);
-console.log("[BOOT] DOLIBARR_API_KEY:", DOLIBARR_API_KEY);
+console.log("[BOOT] KOBO_URL:", KOBO_URL);
+console.log("[BOOT] DOLIBARR_API_URL:", DOLIBARR_API_URL);
+console.log("[BOOT] PORT:", PORT);
 console.log("==========================");
 
+/* ================== AXIOS CLIENT ================== */
 const dolibarr = axios.create({
   baseURL: DOLIBARR_API_URL,
   headers: {
     DOLAPIKEY: DOLIBARR_API_KEY,
     "Content-Type": "application/json"
   },
-  timeout: 15000
+  timeout: 20000
 });
 
 /* ================== FUNCIONES ================== */
 
 async function getKoboSubmissions() {
-  console.log("[KOBO] Requesting submissions...");
-  console.log("[KOBO] URL:", KOBO_URL);
+  console.log("------ KOBO FETCH START ------");
 
-  const res = await axios.get(KOBO_URL, {
-    headers: {
-      Authorization: `Token ${KOBO_TOKEN}`
-    },
-    timeout: 15000
-  });
+  try {
+    const res = await axios.get(KOBO_URL, {
+      headers: {
+        Authorization: `Token ${KOBO_TOKEN}`
+      },
+      timeout: 20000
+    });
 
-  console.log("[KOBO] HTTP STATUS:", res.status);
-  console.log("[KOBO] TOTAL SUBMISSIONS:", res.data.count);
+    console.log("[KOBO] HTTP STATUS:", res.status);
+    console.log("[KOBO] COUNT:", res.data?.count);
+    console.log("[KOBO] RESULTS TYPE:", typeof res.data?.results);
 
-  return res.data.results || [];
+    if (!Array.isArray(res.data.results)) {
+      console.error("[KOBO] results is NOT an array");
+      return [];
+    }
+
+    console.log("[KOBO] FIRST ITEM SAMPLE:", res.data.results[0]);
+    console.log("------ KOBO FETCH END ------");
+
+    return res.data.results;
+  } catch (err) {
+    console.error("[KOBO] ERROR REQUESTING DATA");
+    console.error("[KOBO] MESSAGE:", err.message);
+    if (err.response) {
+      console.error("[KOBO] RESPONSE STATUS:", err.response.status);
+      console.error("[KOBO] RESPONSE DATA:", err.response.data);
+    }
+    throw err;
+  }
 }
 
 async function findTicketByRef(ref) {
-  console.log("[DOLIBARR] Searching ticket with ref:", ref);
+  console.log("------ DOLIBARR SEARCH START ------");
+  console.log("[DOLIBARR] Searching ticket ref:", ref);
 
-  const res = await dolibarr.get("/tickets", {
-    params: {
-      sqlfilters: `(t.ref:=:${ref})`
+  try {
+    const res = await dolibarr.get("/tickets", {
+      params: {
+        sqlfilters: `(t.ref:=:${ref})`
+      }
+    });
+
+    console.log("[DOLIBARR] HTTP STATUS:", res.status);
+    console.log("[DOLIBARR] RAW RESPONSE:", res.data);
+
+    if (!Array.isArray(res.data) || res.data.length === 0) {
+      console.warn("[DOLIBARR] Ticket NOT found:", ref);
+      return null;
     }
-  });
 
-  console.log("[DOLIBARR] Tickets found:", res.data.length);
+    console.log("[DOLIBARR] Ticket FOUND:", res.data[0]);
+    console.log("------ DOLIBARR SEARCH END ------");
 
-  return res.data.length ? res.data[0] : null;
+    return res.data[0];
+  } catch (err) {
+    console.error("[DOLIBARR] ERROR SEARCHING TICKET");
+    console.error(err.message);
+    if (err.response) {
+      console.error(err.response.data);
+    }
+    throw err;
+  }
 }
 
 async function closeTicket(ticketId, ref) {
-  console.log(`[DOLIBARR] Setting status=8 for ticket ${ref} (ID ${ticketId})`);
+  console.log("------ DOLIBARR SETSTATUS START ------");
+  console.log(`[DOLIBARR] Closing ticket REF=${ref} ID=${ticketId}`);
+  console.log("[DOLIBARR] Endpoint:", `/tickets/${ticketId}/setstatus?status=8`);
 
-  const res = await dolibarr.post(
-    `/tickets/${ticketId}/setstatus`,
-    null,
-    {
-      params: { status: 8 }
+  try {
+    const res = await dolibarr.post(
+      `/tickets/${ticketId}/setstatus`,
+      null,
+      {
+        params: { status: 8 }
+      }
+    );
+
+    console.log("[DOLIBARR] HTTP STATUS:", res.status);
+    console.log("[DOLIBARR] RESPONSE:", res.data);
+    console.log("------ DOLIBARR SETSTATUS END ------");
+  } catch (err) {
+    console.error("[DOLIBARR] ERROR SETTING STATUS");
+    console.error(err.message);
+    if (err.response) {
+      console.error("[DOLIBARR] RESPONSE STATUS:", err.response.status);
+      console.error("[DOLIBARR] RESPONSE DATA:", err.response.data);
     }
-  );
-
-  console.log("[DOLIBARR] setstatus response:", res.status, res.data);
+    throw err;
+  }
 }
-
-
-
 
 /* ================== ENDPOINTS ================== */
 
 app.get("/", (req, res) => {
-  res.send("KoBo → Dolibarr service running (TEST MODE)");
+  res.send("KoBo → Dolibarr service running (DEBUG MODE)");
 });
 
 app.get("/run", async (req, res) => {
   console.log("========== RUN START ==========");
+  console.log("[RUN] Triggered at:", new Date().toISOString());
 
   let processed = 0;
   let closed = 0;
 
   try {
     const submissions = await getKoboSubmissions();
+    console.log("[RUN] Submissions received:", submissions.length);
 
     for (const s of submissions) {
       processed++;
-
-      console.log("[RUN] Submission:", s._id || "NO_ID");
+      console.log("---- SUBMISSION LOOP ----");
+      console.log("[RUN] Submission ID:", s._id);
 
       if (!s.ticket_ref) {
-        console.warn("[RUN] ticket_ref missing, skipping");
+        console.warn("[RUN] ticket_ref NOT FOUND in submission");
         continue;
       }
 
       console.log("[RUN] ticket_ref:", s.ticket_ref);
 
       const ticket = await findTicketByRef(s.ticket_ref);
-      if (!ticket) {
-        console.warn("[RUN] Ticket not found in Dolibarr");
-        continue;
-      }
+      if (!ticket) continue;
 
       await closeTicket(ticket.id, s.ticket_ref);
       closed++;
     }
 
     console.log("========== RUN END ==========");
-    console.log("[RUN] Processed:", processed);
-    console.log("[RUN] Closed:", closed);
+    console.log("[RUN] PROCESSED:", processed);
+    console.log("[RUN] CLOSED:", closed);
 
-    res.json({
-      status: "OK",
-      processed,
-      closed
-    });
-
+    res.json({ status: "OK", processed, closed });
   } catch (err) {
-    console.error("========== RUN ERROR ==========");
-    console.error(err.message);
+    console.error("========== RUN FATAL ERROR ==========");
     console.error(err.stack);
-
-    res.status(500).json({
-      status: "ERROR",
-      message: err.message
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
