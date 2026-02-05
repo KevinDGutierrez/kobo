@@ -67,14 +67,15 @@ async function findTicketByRef(ref) {
 }
 
 async function closeTicket(ticketId, ref) {
-  console.log(`[DOLIBARR] Closing ticket ${ref} (ID ${ticketId})`);
+  console.log(`[DOLIBARR] Changing ticket status to 8 -> ${ref} (ID ${ticketId})`);
 
-  const res = await dolibarr.put(`/tickets/${ticketId}`, {
-    status: 3
+  const res = await dolibarr.post(`/tickets/${ticketId}/setstatus`, {
+    status: 8
   });
 
-  console.log("[DOLIBARR] Close response status:", res.status);
+  console.log("[DOLIBARR] setstatus response:", res.status, res.data);
 }
+
 
 /* ================== ENDPOINTS ================== */
 
