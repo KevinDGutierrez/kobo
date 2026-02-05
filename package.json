@@ -1,11 +1,12 @@
 {
-  "name": "kobo-dolibarr-integration",
+  "name": "kobo",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node index.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "express": "^4.19.2"
   }
 }

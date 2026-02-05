@@ -7,13 +7,13 @@ const PORT = process.env.PORT || 8080;
 /* ===== CONFIG ===== */
 
 // KoBo
-const KOBO_TOKEN = "f295306d3c5728fc520bb928e40530d034f71100";
-const ASSET_UID = "aU7Ss6syzzmPJBACQobF4Q";
+const KOBO_TOKEN = process.env.KOBO_TOKEN;
+const ASSET_UID = process.env.ASSET_UID;
 const KOBO_URL = `https://kf.kobotoolbox.org/api/v2/assets/${ASSET_UID}/data/`;
 
 // Dolibarr
 const DOLIBARR_API_URL = "https://app.sen.com.gt:25443/api/index.php";
-const DOLIBARR_API_KEY = "quk5j73GFHUL0F1vZk5l6PhR4t4D8Vvr";
+const DOLIBARR_API_KEY = process.env.DOLIBARR_API_KEY;
 
 /* ================= */
 
@@ -44,6 +44,10 @@ async function closeTicket(ticketId) {
 }
 
 /* ===== ENDPOINT ===== */
+app.get("/", (req, res) => {
+  res.send("KoBo → Dolibarr service running");
+});
+
 app.get("/run", async (req, res) => {
   try {
     const submissions = await getKoboSubmissions();
@@ -67,4 +71,3 @@ app.get("/run", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Service running on port ${PORT}`);
 });
-
