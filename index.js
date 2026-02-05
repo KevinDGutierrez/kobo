@@ -57,7 +57,7 @@ async function closeTicket(ticketId) {
     `/tickets/${ticketId}/setstatus`,
     null,
     {
-      params: { status: 8 }
+      params: { fk_statut: 8 }
     }
   );
 }
