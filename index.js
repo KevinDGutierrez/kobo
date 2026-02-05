@@ -46,7 +46,7 @@ async function findTicketByRef(ref) {
  */
 async function closeTicket(ticketId) {
   await dolibarr.put(`/tickets/${ticketId}`, {
-    fk_statut: 8
+    fk_statut: 5
   });
 }
 
