@@ -6,8 +6,8 @@ const PORT = process.env.PORT || 8080;
 
 app.use(express.json());
 
-const DOLIBARR_API_URL = "https://app.sen.com.gt:25443/api/index.php";
-const DOLIBARR_API_KEY = "quk5j73GFHUL0F1vZk5l6PhR4t4D8Vvr";
+const DOLIBARR_API_URL = "http://172.19.72.111/api/index.php";
+const DOLIBARR_API_KEY = "K46VrwaF";
 
 const dolibarr = axios.create({
   baseURL: DOLIBARR_API_URL,
