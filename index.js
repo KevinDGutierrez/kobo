@@ -11,7 +11,7 @@ const DOLIBARR_API_KEY = "quk5j73GFHUL0F1vZk5l6PhR4t4D8Vvr";
 
 const dolibarr = axios.create({
   baseURL: DOLIBARR_API_URL,
-  timeout: 20000,
+  timeout: 50000,
   headers: {
     DOLAPIKEY: DOLIBARR_API_KEY,
     Accept: "application/json",
