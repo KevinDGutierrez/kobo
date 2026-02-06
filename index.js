@@ -18,30 +18,50 @@ const dolibarr = axios.create({
   headers: {
     DOLAPIKEY: DOLIBARR_API_KEY,
     Accept: "application/json",
-    "User-Agent": "KoBo-Dolibarr-Integration/1.0",
+    "User-Agent": "KoBo-Dolibarr-Integration/1.0"
   }
 });
+
+function normalizeRef(ref) {
+  return ref.toString().trim().toUpperCase();
+}
 
 async function getKoboSubmissions() {
   const res = await axios.get(KOBO_URL, {
     headers: {
-      Authorization: `Token ${KOBO_TOKEN}`,
+      Authorization: `Token ${KOBO_TOKEN}`
     }
   });
-
   return res.data?.results || [];
 }
 
 async function findTicketByRef(ref) {
-  const res = await dolibarr.get("/tickets", {
-    params: {
-      limit: 100,
+  const target = normalizeRef(ref);
+  const limit = 50;
+  let page = 0;
+
+  while (true) {
+    const res = await dolibarr.get("/tickets", {
+      params: {
+        limit,
+        page
+      }
+    });
+
+    if (!Array.isArray(res.data) || res.data.length === 0) {
+      return null;
     }
-  });
 
-  if (!Array.isArray(res.data)) return null;
+    const found = res.data.find(
+      t => normalizeRef(t.ref) === target
+    );
 
-  return res.data.find((t) => t.ref === ref) || null;
+    if (found) {
+      return found;
+    }
+
+    page++;
+  }
 }
 
 async function closeTicket(ticketId) {
@@ -55,7 +75,7 @@ app.get("/", (_, res) => {
 });
 
 app.get("/run", async (_, res) => {
-  const report = [];
+  const results = [];
 
   try {
     const submissions = await getKoboSubmissions();
@@ -71,29 +91,29 @@ app.get("/run", async (_, res) => {
       const ticket = await findTicketByRef(ticketRef);
 
       if (!ticket) {
-        report.push({
+        results.push({
           ticketRef,
-          status: "NO EXISTE",
+          status: "NO EXISTE"
         });
         continue;
       }
 
       await closeTicket(ticket.id);
 
-      report.push({
+      results.push({
         ticketRef,
         ticketId: ticket.id,
-        status: "CERRADO",
+        status: "CERRADO"
       });
     }
 
     res.json({
-      processed: report.length,
-      results: report,
+      processed: results.length,
+      results
     });
   } catch (error) {
     res.status(500).json({
-      error: error.response?.data || error.message,
+      error: error.response?.data || error.message
     });
   }
 })
