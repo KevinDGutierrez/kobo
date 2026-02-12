@@ -1,5 +1,5 @@
 import express from "express";
-import { runCerrarTicket } from "./tickets/ticket.js";
+import { runCerrarTicket } from "./src/tickets/ticket.js";
 
 const app = express();
 const PORT = process.env.PORT || 8080;
