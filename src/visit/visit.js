@@ -1,4 +1,7 @@
-import { apiClient, endpoints } from '../service/api.js';
+import crypto from "crypto";
+import { apiClient, endpoints } from "../service/api.js"; // si tu carpeta está en src, quedaría ../service/api.js igual (visit y service están al mismo nivel)
+
+const DEBUG = process.env.DEBUG_VISIT === "1";
 
 function asArray(data) {
   if (Array.isArray(data)) return data;
@@ -7,63 +10,108 @@ function asArray(data) {
 }
 
 function norm(x) {
-  return String(x ?? '').trim().toUpperCase();
+  return String(x ?? "").trim().toUpperCase();
 }
 function normLogin(x) {
-  return String(x ?? '').trim();
+  return String(x ?? "").trim();
 }
 
-async function findThirdpartyByRef(ref) {
+async function findThirdpartyByRef(ref, rid) {
   const target = norm(ref);
 
+  // 1) Intento por code_client (Ref típica)
   try {
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.code_client:=:${encodeURIComponent(target)})`;
+    if (DEBUG) console.log(`[VISIT ${rid}] thirdparty search url1: ${url}`);
+
     const res = await apiClient.get(url);
     const list = asArray(res.data);
-    if (list.length) return list[0];
-  } catch {}
 
+    if (DEBUG) console.log(`[VISIT ${rid}] thirdparty search1 results: ${list.length}`);
+
+    if (list.length) return list[0];
+  } catch (e) {
+    console.log(
+      `[VISIT ${rid}] thirdparty search1 ERROR:`,
+      e?.response?.status,
+      JSON.stringify(e?.response?.data || e.message)
+    );
+  }
+
+  // 2) Fallback paginando
   const limit = 50;
   let page = 0;
+
   while (true) {
+    if (DEBUG) console.log(`[VISIT ${rid}] thirdparty paging page=${page}`);
+
     const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
     const list = asArray(res.data);
+
     if (!list.length) return null;
 
     const found = list.find(t => norm(t?.code_client) === target || norm(t?.ref) === target);
     if (found) return found;
 
     page++;
+    if (page > 300) return null; // evita loop infinito
   }
 }
 
-async function findUserByLogin(login) {
+async function findUserByLogin(login, rid) {
   const target = normLogin(login);
 
+  // 1) Intento por sqlfilters login
   try {
     const url = `${endpoints.usersEndpoint}?sqlfilters=(t.login:=:${encodeURIComponent(target)})`;
+    if (DEBUG) console.log(`[VISIT ${rid}] user search url1: ${url}`);
+
     const res = await apiClient.get(url);
     const list = asArray(res.data);
-    if (list.length) return list[0];
-  } catch {}
 
+    if (DEBUG) console.log(`[VISIT ${rid}] user search1 results: ${list.length}`);
+
+    if (list.length) return list[0];
+  } catch (e) {
+    console.log(
+      `[VISIT ${rid}] user search1 ERROR:`,
+      e?.response?.status,
+      JSON.stringify(e?.response?.data || e.message)
+    );
+  }
+
+  // 2) Fallback paginando
   const limit = 50;
   let page = 0;
+
   while (true) {
+    if (DEBUG) console.log(`[VISIT ${rid}] user paging page=${page}`);
+
     const res = await apiClient.get(endpoints.usersEndpoint, { params: { limit, page } });
     const list = asArray(res.data);
+
     if (!list.length) return null;
 
-    const found = list.find(u => String(u?.login ?? '').trim() === target);
+    const found = list.find(u => String(u?.login ?? "").trim() === target);
     if (found) return found;
 
     page++;
+    if (page > 300) return null;
   }
 }
 
+/**
+ * POST /visit/run
+ */
 export async function crearVisita(req, res) {
+  const rid = crypto.randomUUID();
+
   try {
-    const body = req.body;
+    // Log básico (sin secretos)
+    console.log(`[VISIT ${rid}] START /visit/run`);
+    if (DEBUG) console.log(`[VISIT ${rid}] BODY:`, JSON.stringify(req.body));
+
+    const body = req.body || {};
 
     const thirdpartyRef =
       body?.thirdparty_ref ||
@@ -79,40 +127,70 @@ export async function crearVisita(req, res) {
       body?.datos_visita?.login ||
       null;
 
-    if (!thirdpartyRef) return res.json({ status: 'SIN tercero_ref' });
-    if (!asesorLogin) return res.json({ status: 'SIN asesor_login' });
+    const label = body?.label || body?.titulo || (thirdpartyRef ? `Visita - ${thirdpartyRef}` : "Visita");
+    const note = body?.note || body?.descripcion || "";
 
-    const tercero = await findThirdpartyByRef(thirdpartyRef);
-    if (!tercero) return res.json({ thirdpartyRef, status: 'TERCERO NO EXISTE' });
+    console.log(`[VISIT ${rid}] extracted thirdpartyRef=${thirdpartyRef} asesorLogin=${asesorLogin}`);
+    if (DEBUG) console.log(`[VISIT ${rid}] label="${label}" noteLen=${String(note).length}`);
 
-    const user = await findUserByLogin(asesorLogin);
-    if (!user) return res.json({ asesorLogin, status: 'USUARIO NO EXISTE' });
+    if (!thirdpartyRef) return res.status(200).json({ status: "SIN tercero_ref" });
+    if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
+    // Buscar tercero
+    const tercero = await findThirdpartyByRef(thirdpartyRef, rid);
+    console.log(`[VISIT ${rid}] thirdparty found? ${!!tercero} id=${tercero?.id} code_client=${tercero?.code_client}`);
+
+    if (!tercero) {
+      return res.status(200).json({ thirdpartyRef, status: "TERCERO NO EXISTE" });
+    }
+
+    // Buscar usuario por login
+    const user = await findUserByLogin(asesorLogin, rid);
+    console.log(`[VISIT ${rid}] user found? ${!!user} id=${user?.id} login=${user?.login}`);
+
+    if (!user) {
+      return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE" });
+    }
+
+    // Fecha automática: unix seconds
     const now = Math.floor(Date.now() / 1000);
 
     const payload = {
       socid: Number(tercero.id),
       userownerid: Number(user.id),
-      type_code: 'AC_RDV',
-      label: body?.label || body?.titulo || `Visita - ${thirdpartyRef}`,
-      note: body?.note || body?.descripcion || '',
+      type_code: "AC_RDV",
+      label,
+      note,
       datep: now,
-      datef: now
+      datef: now,
     };
+
+    console.log(`[VISIT ${rid}] POST ${endpoints.agendaEventsEndpoint} payload=`, JSON.stringify(payload));
 
     const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
 
-    return res.json({
-      status: 'VISITA CREADA',
+    console.log(`[VISIT ${rid}] CREATED response status=${created.status} data=`, JSON.stringify(created.data));
+
+    return res.status(200).json({
+      status: "VISITA CREADA",
+      eventId: created.data,
       thirdpartyRef,
       thirdpartyId: tercero.id,
       asesorLogin,
       userId: user.id,
-      eventId: created.data
     });
   } catch (error) {
+    const status = error?.response?.status;
+    const data = error?.response?.data;
+
+    console.log(
+      `[VISIT ${rid}] ERROR status=${status} message=${error?.message}`
+    );
+    if (data) console.log(`[VISIT ${rid}] ERROR data=`, JSON.stringify(data));
+
     return res.status(500).json({
-      error: error?.response?.data || error?.message || String(error)
+      rid,
+      error: data || error.message || String(error),
     });
   }
 }
