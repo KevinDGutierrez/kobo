@@ -16,7 +16,5 @@ export const apiClient = axios.create({
 
 export const endpoints = {
   ticketsEndpoint: "/tickets",
-  contactsEndpoint: "/contacts",
-  thirdpartiesEndpoint: "/thirdparties",
-  usersEndpoint: "/users",
+  agendaEventsEndpoint: '/agendaevents'
 };
