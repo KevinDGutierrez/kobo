@@ -1,6 +1,5 @@
 import axios from "axios";
 
-// Se configuran en Google Cloud (Cloud Run / Functions), NO en .env
 const DOLIBARR_API_URL = process.env.DOLIBARR_API_URL;
 const DOLIBARR_API_KEY = process.env.DOLIBARR_API_KEY;
 
@@ -21,4 +20,3 @@ export const endpoints = {
   thirdpartiesEndpoint: "/thirdparties",
   usersEndpoint: "/users",
 };
-si
