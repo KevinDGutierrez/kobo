@@ -29,123 +29,83 @@ async function closeTicket(ticketId) {
     await apiClient.put(`${endpoints.ticketsEndpoint}/${ticketId}`, { fk_statut: closeStatus });
 }
 
-function parseTimeWithOffset(raw) {
-    const s = String(raw || "").trim();
+function parseKoboHour(raw) {
+    const s = String(raw ?? "").trim();
     const m = s.match(
-        /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.(\d{1,3}))?(Z|[+\-]\d{2}:\d{2})?$/
+        /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})?(Z|[+\-]\d{2}:\d{2})?$/
     );
     if (!m) return null;
 
-    const h = Number(m[1]);
-    const mi = Number(m[2]);
-    const sec = Number(m[3] || 0);
-    const ms = Number((m[4] || "0").padEnd(3, "0"));
-    const tz = m[5] || null;
+    const HH = m[1];
+    const MM = m[2];
+    const SS = String(m[3] ?? "00").padStart(2, "0");
+    const offset = m[4] || null;
 
-    let offsetMin = null;
-    if (tz === "Z") offsetMin = 0;
-    else if (tz) {
-        const sign = tz.startsWith("-") ? -1 : 1;
-        const [oh, om] = tz.slice(1).split(":").map(Number);
-        offsetMin = sign * (oh * 60 + om);
-    }
-
-    return { h, mi, sec, ms, offsetMin };
+    return { HH, MM, SS, offset };
 }
 
-function pickTicketYMD(ticket) {
-    for (const k of ["date_creation", "datec", "date_closure", "date_close"]) {
-        const v = ticket?.[k];
-        if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
-    }
-
-    for (const k of ["date_creation", "datec"]) {
-        const v = ticket?.[k];
-        if (typeof v === "number" && Number.isFinite(v)) {
-            const d = new Date(v * 1000);
-            const y = d.getFullYear();
-            const mo = String(d.getMonth() + 1).padStart(2, "0");
-            const day = String(d.getDate()).padStart(2, "0");
-            return `${y}-${mo}-${day}`;
-        }
-    }
-
-    const d = new Date();
-    const y = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${mo}-${day}`;
+function pad2(x) {
+    return String(x).padStart(2, "0");
 }
 
-function toUnixSecondsFromYMDAndTime(ymd, t) {
-    if (!ymd || !t) return null;
+function buildYMDFromKobo(body) {
+    const anio = body.anio ?? body?.datos_tecnico?.anio;
+    const mes = body.mes ?? body?.datos_tecnico?.mes;
+    const dia = body.dia ?? body?.datos_tecnico?.dia;
+
+    if (!anio || !mes || !dia) return null;
+    return `${String(anio).trim()}-${pad2(mes)}-${pad2(dia)}`;
+}
+
+function buildDolibarrDatetime(ymd, t) {
+    return `${ymd} ${t.HH}:${t.MM}:${t.SS}`;
+}
+
+function toEpochSeconds(ymd, t) {
     const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!m) return null;
-
     const y = Number(m[1]);
     const mo = Number(m[2]);
     const d = Number(m[3]);
 
-    const localUtcMs = Date.UTC(y, mo - 1, d, t.h, t.mi, t.sec, t.ms);
-    const utcMs = t.offsetMin != null ? localUtcMs - t.offsetMin * 60000 : localUtcMs;
-    return Math.floor(utcMs / 1000);
-}
+    const utcMs = Date.UTC(y, mo - 1, d, Number(t.HH), Number(t.MM), Number(t.SS), 0);
 
-function pickDeA(body) {
-    let de =
-        body.de ?? body.De ?? body.hora_de ?? body.horaDe ?? body?.detalle_mano_obra_de ?? body?.detalle_mano_obra?.de;
-    let a =
-        body.a ?? body.A ?? body.hora_a ?? body.horaA ?? body?.detalle_mano_obra_a ?? body?.detalle_mano_obra?.a;
-
-    de = de ?? body?.datos_tecnico?.de ?? body?.datos_tecnico?.hora_de ?? body?.datos_tecnico?.horaDe;
-    a = a ?? body?.datos_tecnico?.a ?? body?.datos_tecnico?.hora_a ?? body?.datos_tecnico?.horaA;
-
-    const rows =
-        body?.detalle_mano_obra_rows ||
-        body?.detalle_mano_obra ||
-        body?.detalleManoObra ||
-        body?.datos_tecnico?.detalle_mano_obra ||
-        null;
-
-    if (Array.isArray(rows) && rows.length) {
-        const parsed = rows
-            .map((r) => ({ de: parseTimeWithOffset(r?.de ?? r?.De), a: parseTimeWithOffset(r?.a ?? r?.A) }))
-            .filter((x) => x.de && x.a);
-
-        if (parsed.length) {
-            const toSecDay = (t) => t.h * 3600 + t.mi * 60 + t.sec;
-            const earliest = parsed.reduce((p, c) => (toSecDay(c.de) < toSecDay(p.de) ? c : p), parsed[0]);
-            const latest = parsed.reduce((p, c) => (toSecDay(c.a) > toSecDay(p.a) ? c : p), parsed[0]);
-            de = de ?? rows[0]?.de ?? rows[0]?.De;
-            a = a ?? rows[0]?.a ?? rows[0]?.A;
-            return { deRaw: earliest.de, aRaw: latest.a, rawDeStr: de, rawAStr: a, fromRows: true };
-        }
+    if (t.offset && t.offset !== "Z") {
+        const sign = t.offset.startsWith("-") ? -1 : 1;
+        const [oh, om] = t.offset.slice(1).split(":").map(Number);
+        const offMin = sign * (oh * 60 + om);
+        return Math.floor((utcMs - offMin * 60000) / 1000);
     }
 
-    return { deRaw: de, aRaw: a, rawDeStr: de, rawAStr: a, fromRows: false };
+    if (t.offset === "Z") {
+        return Math.floor(utcMs / 1000);
+    }
+
+    const localMs = new Date(y, mo - 1, d, Number(t.HH), Number(t.MM), Number(t.SS), 0).getTime();
+    return Math.floor(localMs / 1000);
 }
 
-async function setTicketHours(ticketId, horaInicioTs, horaFinTs) {
+async function setTicketHours(ticketId, valueInicio, valueFinal) {
     const current = await apiClient.get(`${endpoints.ticketsEndpoint}/${ticketId}`);
     const currentOptions = current?.data?.array_options || {};
     const nextOptions = { ...currentOptions };
 
-    nextOptions.options_horadeinicio = horaInicioTs;
-    nextOptions.options_horafinal = horaFinTs;
+    nextOptions.options_horadeinicio = valueInicio;
+    nextOptions.options_horafinal = valueFinal;
 
     await apiClient.put(`${endpoints.ticketsEndpoint}/${ticketId}`, {
         array_options: nextOptions,
     });
 
     const after = await apiClient.get(`${endpoints.ticketsEndpoint}/${ticketId}`);
-    return after.data;
+    return after.data?.array_options || null;
 }
 
 export async function runCerrarTicket(req, res) {
     try {
         const body = req.body || {};
-        const ticketRef = body.ticket_ref || body?.datos_tecnico?.ticket_ref || null;
 
+        const ticketRef = body.ticket_ref || body?.datos_tecnico?.ticket_ref || null;
         if (!ticketRef) return res.status(200).json({ status: "SIN ticket_ref" });
 
         const ticket = await findTicketByRef(ticketRef);
@@ -153,28 +113,63 @@ export async function runCerrarTicket(req, res) {
 
         await closeTicket(ticket.id);
 
-        const ymd = pickTicketYMD(ticket);
-        const pick = pickDeA(body);
+        const horaDeRaw = body.hora_de ?? body?.datos_tecnico?.hora_de ?? null;
+        const horaARaw = body.hora_a ?? body?.datos_tecnico?.hora_a ?? null;
 
-        const tDe = typeof pick.deRaw === "object" ? pick.deRaw : parseTimeWithOffset(pick.deRaw);
-        const tA = typeof pick.aRaw === "object" ? pick.aRaw : parseTimeWithOffset(pick.aRaw);
+        const ymd = buildYMDFromKobo(body);
+        const tDe = parseKoboHour(horaDeRaw);
+        const tA = parseKoboHour(horaARaw);
 
         let hoursUpdated = false;
+        let method = null;
+        let array_options_after = null;
         let hoursError = null;
-        let arrayOptionsAfter = null;
 
-        if (tDe && tA) {
-            let inicioTs = toUnixSecondsFromYMDAndTime(ymd, tDe);
-            let finTs = toUnixSecondsFromYMDAndTime(ymd, tA);
+        if (!ymd || !tDe || !tA) {
+            return res.status(200).json({
+                ticketRef,
+                ticketId: ticket.id,
+                status: "CERRADO",
+                hoursUpdated: false,
+                motivo: "FALTAN dia/mes/anio o hora_de/hora_a o formato inválido",
+                recibido: { ymd, horaDeRaw, horaARaw },
+            });
+        }
 
-            if (inicioTs != null && finTs != null && finTs <= inicioTs) finTs += 86400;
+        const inicioStr = buildDolibarrDatetime(ymd, tDe);
+        const finalStr = buildDolibarrDatetime(ymd, tA);
 
-            try {
-                const updated = await setTicketHours(ticket.id, inicioTs, finTs);
+        try {
+            const ao = await setTicketHours(ticket.id, inicioStr, finalStr);
+            array_options_after = ao;
+            if (
+                ao?.options_horadeinicio === inicioStr &&
+                ao?.options_horafinal === finalStr
+            ) {
                 hoursUpdated = true;
-                arrayOptionsAfter = updated.array_options;
-            } catch (e) {
-                hoursError = e?.response?.data || e.message || String(e);
+                method = "datetime_string";
+            }
+        } catch (e) {
+            hoursError = e?.response?.data || e.message || String(e);
+        }
+
+        if (!hoursUpdated) {
+            try {
+                const inicioTs = toEpochSeconds(ymd, tDe);
+                const finalTs = toEpochSeconds(ymd, tA);
+
+                const ao2 = await setTicketHours(ticket.id, inicioTs, finalTs);
+                array_options_after = ao2;
+
+                if (
+                    ao2?.options_horadeinicio === inicioTs ||
+                    ao2?.options_horadeinicio === String(inicioTs)
+                ) {
+                    hoursUpdated = true;
+                    method = "epoch_seconds";
+                }
+            } catch (e2) {
+                hoursError = e2?.response?.data || e2.message || String(e2);
             }
         }
 
@@ -183,11 +178,10 @@ export async function runCerrarTicket(req, res) {
             ticketId: ticket.id,
             status: "CERRADO",
             hoursUpdated,
-            base_date_ymd: ymd,
-            received_de: pick.rawDeStr,
-            received_a: pick.rawAStr,
+            method,
+            enviado: { inicioStr, finalStr },
+            array_options_after,
             hoursError,
-            array_options_after: arrayOptionsAfter,
         });
     } catch (error) {
         return res.status(500).json({
