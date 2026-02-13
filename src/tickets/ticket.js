@@ -14,47 +14,21 @@ function parseKoboHour(raw) {
         /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})?(Z|[+\-]\d{2}:\d{2})?$/
     );
     if (!m) return null;
+
     const HH = m[1];
     const MM = m[2];
     const SS = String(m[3] ?? "00").padStart(2, "0");
     const offset = m[4] || null;
-    return { HH, MM, SS, offset };
-}
 
-function buildYMDFromKobo(body) {
-    const anio = body.anio ?? body?.datos_tecnico?.anio;
-    const mes = body.mes ?? body?.datos_tecnico?.mes;
-    const dia = body.dia ?? body?.datos_tecnico?.dia;
-
-    if (!anio || !mes || !dia) return null;
-    return `${String(anio).trim()}-${pad2(mes)}-${pad2(dia)}`;
+    return { HH, MM, SS, offset, raw: s };
 }
 
 function buildDolibarrDatetime(ymd, t) {
     return `${ymd} ${t.HH}:${t.MM}:${t.SS}`;
 }
 
-function toEpochSeconds(ymd, t) {
-    const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!m) return null;
-
-    const y = Number(m[1]);
-    const mo = Number(m[2]);
-    const d = Number(m[3]);
-
-    const utcMs = Date.UTC(y, mo - 1, d, Number(t.HH), Number(t.MM), Number(t.SS), 0);
-
-    if (t.offset && t.offset !== "Z") {
-        const sign = t.offset.startsWith("-") ? -1 : 1;
-        const [oh, om] = t.offset.slice(1).split(":").map(Number);
-        const offMin = sign * (oh * 60 + om);
-        return Math.floor((utcMs - offMin * 60000) / 1000);
-    }
-
-    if (t.offset === "Z") return Math.floor(utcMs / 1000);
-
-    const localMs = new Date(y, mo - 1, d, Number(t.HH), Number(t.MM), Number(t.SS), 0).getTime();
-    return Math.floor(localMs / 1000);
+function secOfDay(t) {
+    return Number(t.HH) * 3600 + Number(t.MM) * 60 + Number(t.SS);
 }
 
 async function findTicketByRef(ref) {
@@ -66,7 +40,7 @@ async function findTicketByRef(ref) {
     console.log("[findTicketByRef] target:", target);
 
     while (page < MAX_PAGES) {
-        console.log("[findTicketByRef] page:", page, "limit:", limit);
+        console.log("[findTicketByRef] page:", page);
 
         const res = await apiClient.get(endpoints.ticketsEndpoint, { params: { limit, page } });
         const data = res.data;
@@ -84,20 +58,15 @@ async function findTicketByRef(ref) {
         page++;
     }
 
-    console.log("[findTicketByRef] NOT FOUND after pages:", MAX_PAGES);
     return null;
 }
 
 async function closeTicket(ticketId) {
     const closeStatus = Number(process.env.DOLIBARR_CLOSE_STATUS || 8);
     const url = `${endpoints.ticketsEndpoint}/${ticketId}`;
-
     console.log("[closeTicket] url:", url, "fk_statut:", closeStatus);
-
     const r = await apiClient.put(url, { fk_statut: closeStatus });
-
-    console.log("[closeTicket] response.status:", r?.status, "response.data keys:", r?.data ? Object.keys(r.data) : null);
-    return r?.data;
+    console.log("[closeTicket] status:", r?.status);
 }
 
 async function setTicketHours(ticketId, valueInicio, valueFinal) {
@@ -119,13 +88,72 @@ async function setTicketHours(ticketId, valueInicio, valueFinal) {
     console.log("[setTicketHours] sending.array_options:", nextOptions);
 
     const putRes = await apiClient.put(url, { array_options: nextOptions });
-
-    console.log("[setTicketHours] put.status:", putRes?.status, "put.data keys:", putRes?.data ? Object.keys(putRes.data) : null);
+    console.log("[setTicketHours] put.status:", putRes?.status);
 
     const after = await apiClient.get(url);
     console.log("[setTicketHours] after.array_options:", after?.data?.array_options || null);
 
     return after?.data?.array_options || null;
+}
+
+function pickFromManoObra(body) {
+    const rows = Array.isArray(body?.mano_obra) ? body.mano_obra : [];
+    console.log("[pickFromManoObra] rows.length:", rows.length);
+
+    if (!rows.length) return null;
+
+    const parsed = rows
+        .map((r, idx) => {
+            const dia = r?.["mano_obra/dia"];
+            const mes = r?.["mano_obra/mes"];
+            const anio = r?.["mano_obra/anio"];
+            const deRaw = r?.["mano_obra/hora_de"];
+            const aRaw = r?.["mano_obra/hora_a"];
+
+            const ymd =
+                anio && mes && dia ? `${String(anio).trim()}-${pad2(mes)}-${pad2(dia)}` : null;
+
+            const tDe = parseKoboHour(deRaw);
+            const tA = parseKoboHour(aRaw);
+
+            console.log("[pickFromManoObra] row", idx, {
+                dia,
+                mes,
+                anio,
+                ymd,
+                deRaw,
+                aRaw,
+                tDe,
+                tA,
+            });
+
+            if (!ymd || !tDe || !tA) return null;
+
+            return { idx, ymd, tDe, tA };
+        })
+        .filter(Boolean);
+
+    console.log("[pickFromManoObra] parsed.valid:", parsed.length);
+
+    if (!parsed.length) return null;
+
+    let earliest = parsed[0];
+    for (const p of parsed) {
+        if (secOfDay(p.tDe) < secOfDay(earliest.tDe)) earliest = p;
+    }
+
+    let latest = parsed[0];
+    for (const p of parsed) {
+        if (secOfDay(p.tA) > secOfDay(latest.tA)) latest = p;
+    }
+
+    const ymd = earliest.ymd;
+    const tDe = earliest.tDe;
+    const tA = latest.tA;
+
+    console.log("[pickFromManoObra] chosen:", { ymd, tDe, tA });
+
+    return { ymd, tDe, tA };
 }
 
 export async function runCerrarTicket(req, res) {
@@ -135,7 +163,7 @@ export async function runCerrarTicket(req, res) {
         console.log("[runCerrarTicket] body keys:", Object.keys(body));
         console.log("[runCerrarTicket] body:", JSON.stringify(body));
 
-        const ticketRef = body.ticket_ref || body?.datos_tecnico?.ticket_ref || null;
+        const ticketRef = body.ticket_ref || null;
         console.log("[runCerrarTicket] ticketRef:", ticketRef);
 
         if (!ticketRef) return res.status(200).json({ status: "SIN ticket_ref" });
@@ -145,103 +173,57 @@ export async function runCerrarTicket(req, res) {
 
         await closeTicket(ticket.id);
 
-        const horaDeRaw = body.hora_de ?? body?.datos_tecnico?.hora_de ?? null;
-        const horaARaw = body.hora_a ?? body?.datos_tecnico?.hora_a ?? null;
+        const pick = pickFromManoObra(body);
 
-        console.log("[runCerrarTicket] hora_de raw:", horaDeRaw);
-        console.log("[runCerrarTicket] hora_a raw:", horaARaw);
-
-        const ymd = buildYMDFromKobo(body);
-        console.log("[runCerrarTicket] ymd:", ymd);
-
-        const tDe = parseKoboHour(horaDeRaw);
-        const tA = parseKoboHour(horaARaw);
-
-        console.log("[runCerrarTicket] tDe:", tDe);
-        console.log("[runCerrarTicket] tA:", tA);
-
-        let hoursUpdated = false;
-        let method = null;
-        let array_options_after = null;
-        let hoursError = null;
-
-        if (!ymd || !tDe || !tA) {
-            console.log("[runCerrarTicket] NO HOURS UPDATE: missing ymd/tDe/tA");
+        if (!pick) {
+            console.log("[runCerrarTicket] NO HOURS UPDATE: mano_obra no trae fecha/hora bien");
             return res.status(200).json({
                 ticketRef,
                 ticketId: ticket.id,
                 status: "CERRADO",
                 hoursUpdated: false,
-                recibido: { ymd, horaDeRaw, horaARaw, tDe, tA },
+                motivo: "mano_obra sin dia/mes/anio o hora_de/hora_a válidos",
             });
         }
 
-        const inicioStr = buildDolibarrDatetime(ymd, tDe);
-        const finalStr = buildDolibarrDatetime(ymd, tA);
+        const inicioStr = buildDolibarrDatetime(pick.ymd, pick.tDe);
+        let finalStr = buildDolibarrDatetime(pick.ymd, pick.tA);
 
         console.log("[runCerrarTicket] inicioStr:", inicioStr);
-        console.log("[runCerrarTicket] finalStr:", finalStr);
+        console.log("[runCerrarTicket] finalStr(before):", finalStr);
+
+        if (secOfDay(pick.tA) <= secOfDay(pick.tDe)) {
+            console.log("[runCerrarTicket] cruzo medianoche, sumando 1 dia al finalStr");
+            const [Y, M, D] = pick.ymd.split("-").map(Number);
+            const next = new Date(Y, M - 1, D + 1);
+            const ymd2 = `${next.getFullYear()}-${pad2(next.getMonth() + 1)}-${pad2(next.getDate())}`;
+            finalStr = buildDolibarrDatetime(ymd2, pick.tA);
+        }
+
+        console.log("[runCerrarTicket] finalStr(after):", finalStr);
+
+        let array_options_after = null;
+        let hoursError = null;
 
         try {
-            const ao = await setTicketHours(ticket.id, inicioStr, finalStr);
-            array_options_after = ao;
-
-            console.log("[runCerrarTicket] validate string saved:", {
-                savedInicio: ao?.options_horadeinicio,
-                savedFinal: ao?.options_horafinal,
-            });
-
-            if (ao?.options_horadeinicio === inicioStr && ao?.options_horafinal === finalStr) {
-                hoursUpdated = true;
-                method = "datetime_string";
-            }
+            array_options_after = await setTicketHours(ticket.id, inicioStr, finalStr);
         } catch (e) {
             hoursError = e?.response?.data || e.message || String(e);
-            console.log("[runCerrarTicket] string hoursError:", hoursError);
+            console.log("[runCerrarTicket] setTicketHours ERROR:", hoursError);
         }
 
-        if (!hoursUpdated) {
-            try {
-                const inicioTs = toEpochSeconds(ymd, tDe);
-                const finalTs = toEpochSeconds(ymd, tA);
+        const ok =
+            array_options_after?.options_horadeinicio === inicioStr &&
+            array_options_after?.options_horafinal === finalStr;
 
-                console.log("[runCerrarTicket] inicioTs:", inicioTs);
-                console.log("[runCerrarTicket] finalTs:", finalTs);
-
-                const ao2 = await setTicketHours(ticket.id, inicioTs, finalTs);
-                array_options_after = ao2;
-
-                console.log("[runCerrarTicket] validate epoch saved:", {
-                    savedInicio: ao2?.options_horadeinicio,
-                    savedFinal: ao2?.options_horafinal,
-                });
-
-                const savedInicio = ao2?.options_horadeinicio;
-                const savedFinal = ao2?.options_horafinal;
-
-                if (
-                    savedInicio === inicioTs ||
-                    savedInicio === String(inicioTs) ||
-                    savedFinal === finalTs ||
-                    savedFinal === String(finalTs)
-                ) {
-                    hoursUpdated = true;
-                    method = "epoch_seconds";
-                }
-            } catch (e2) {
-                hoursError = e2?.response?.data || e2.message || String(e2);
-                console.log("[runCerrarTicket] epoch hoursError:", hoursError);
-            }
-        }
-
-        console.log("[runCerrarTicket] DONE:", { hoursUpdated, method });
+        console.log("[runCerrarTicket] hoursUpdated:", ok);
+        console.log("[runCerrarTicket] array_options_after:", array_options_after);
 
         return res.status(200).json({
             ticketRef,
             ticketId: ticket.id,
             status: "CERRADO",
-            hoursUpdated,
-            method,
+            hoursUpdated: ok,
             enviado: { inicioStr, finalStr },
             array_options_after,
             hoursError,
