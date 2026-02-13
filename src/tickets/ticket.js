@@ -23,10 +23,6 @@ function parseKoboHour(raw) {
     return { HH, MM, SS, offset };
 }
 
-function secOfDay(t) {
-    return Number(t.HH) * 3600 + Number(t.MM) * 60 + Number(t.SS);
-}
-
 function toEpochSeconds(ymd, t) {
     const m = String(ymd || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!m) return null;
@@ -110,42 +106,22 @@ async function setTicketHours(ticketId, valueInicio, valueFinal) {
     return after?.data?.array_options || null;
 }
 
-function pickFromManoObra(body) {
-    const rows = Array.isArray(body?.mano_obra) ? body.mano_obra : [];
-    if (!rows.length) return null;
+function pickFromTicketTiempo(body) {
+    const fi = body["ticket_tiempo/ticket_fecha_inicio"] ?? null;
+    const hi = body["ticket_tiempo/ticket_hora_inicio"] ?? null;
+    const ff = body["ticket_tiempo/ticket_fecha_final"] ?? null;
+    const hf = body["ticket_tiempo/ticket_hora_final"] ?? null;
 
-    const parsed = rows
-        .map((r) => {
-            const dia = r?.["mano_obra/dia"];
-            const mes = r?.["mano_obra/mes"];
-            const anio = r?.["mano_obra/anio"];
-            const deRaw = r?.["mano_obra/hora_de"];
-            const aRaw = r?.["mano_obra/hora_a"];
+    if (!fi || !hi || !ff || !hf) return null;
 
-            const ymd =
-                anio && mes && dia ? `${String(anio).trim()}-${pad2(mes)}-${pad2(dia)}` : null;
+    const ymdStart = String(fi).slice(0, 10);
+    const ymdEnd = String(ff).slice(0, 10);
 
-            const tDe = parseKoboHour(deRaw);
-            const tA = parseKoboHour(aRaw);
+    const tDe = parseKoboHour(hi);
+    const tA = parseKoboHour(hf);
+    if (!tDe || !tA) return null;
 
-            if (!ymd || !tDe || !tA) return null;
-            return { ymd, tDe, tA };
-        })
-        .filter(Boolean);
-
-    if (!parsed.length) return null;
-
-    let earliest = parsed[0];
-    for (const p of parsed) {
-        if (secOfDay(p.tDe) < secOfDay(earliest.tDe)) earliest = p;
-    }
-
-    let latest = parsed[0];
-    for (const p of parsed) {
-        if (secOfDay(p.tA) > secOfDay(latest.tA)) latest = p;
-    }
-
-    return { ymd: earliest.ymd, tDe: earliest.tDe, tA: latest.tA };
+    return { ymdStart, ymdEnd, tDe, tA };
 }
 
 export async function runCerrarTicket(req, res) {
@@ -158,26 +134,24 @@ export async function runCerrarTicket(req, res) {
         const ticket = await findTicketByRef(ticketRef);
         if (!ticket) return res.status(200).json({ ticketRef, status: "NO EXISTE" });
 
-        await closeTicket(ticket.id);
-
-        const pick = pickFromManoObra(body);
+        const pick = pickFromTicketTiempo(body);
         if (!pick) {
             return res.status(200).json({
                 ticketRef,
                 ticketId: ticket.id,
-                status: "CERRADO",
+                status: "NO_HAY_FECHAS_HORAS_NUEVAS",
                 hoursUpdated: false,
             });
         }
 
-        const start = toUtcDatetimeFromKobo(pick.ymd, pick.tDe);
-        const end = toUtcDatetimeFromKobo(pick.ymd, pick.tA);
+        const start = toUtcDatetimeFromKobo(pick.ymdStart, pick.tDe);
+        const end = toUtcDatetimeFromKobo(pick.ymdEnd, pick.tA);
 
         if (!start || !end) {
             return res.status(200).json({
                 ticketRef,
                 ticketId: ticket.id,
-                status: "CERRADO",
+                status: "ERROR_CONVERSION_FECHA_HORA",
                 hoursUpdated: false,
             });
         }
@@ -185,9 +159,11 @@ export async function runCerrarTicket(req, res) {
         let inicioStr = start.utcStr;
         let finalStr = end.utcStr;
 
-        if (end.epoch <= start.epoch) {
+        if (pick.ymdStart === pick.ymdEnd && end.epoch <= start.epoch) {
             finalStr = epochToUtcString(end.epoch + 86400);
         }
+
+        await closeTicket(ticket.id);
 
         const array_options_after = await setTicketHours(ticket.id, inicioStr, finalStr);
 
