@@ -4,29 +4,8 @@ function normalizeRef(ref) {
     return ref.toString().trim().toUpperCase();
 }
 
-async function findTicketByRef(ref) {
-    const target = normalizeRef(ref);
-    const limit = 50;
-    let page = 0;
-    const MAX_PAGES = 500;
-
-    while (page < MAX_PAGES) {
-        const res = await apiClient.get(endpoints.ticketsEndpoint, { params: { limit, page } });
-        const data = res.data;
-
-        if (!Array.isArray(data) || data.length === 0) return null;
-
-        const found = data.find((t) => normalizeRef(t.ref) === target);
-        if (found) return found;
-
-        page++;
-    }
-    return null;
-}
-
-async function closeTicket(ticketId) {
-    const closeStatus = Number(process.env.DOLIBARR_CLOSE_STATUS || 8);
-    await apiClient.put(`${endpoints.ticketsEndpoint}/${ticketId}`, { fk_statut: closeStatus });
+function pad2(x) {
+    return String(x).padStart(2, "0");
 }
 
 function parseKoboHour(raw) {
@@ -35,17 +14,11 @@ function parseKoboHour(raw) {
         /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})?(Z|[+\-]\d{2}:\d{2})?$/
     );
     if (!m) return null;
-
     const HH = m[1];
     const MM = m[2];
     const SS = String(m[3] ?? "00").padStart(2, "0");
     const offset = m[4] || null;
-
     return { HH, MM, SS, offset };
-}
-
-function pad2(x) {
-    return String(x).padStart(2, "0");
 }
 
 function buildYMDFromKobo(body) {
@@ -64,6 +37,7 @@ function buildDolibarrDatetime(ymd, t) {
 function toEpochSeconds(ymd, t) {
     const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!m) return null;
+
     const y = Number(m[1]);
     const mo = Number(m[2]);
     const d = Number(m[3]);
@@ -77,35 +51,93 @@ function toEpochSeconds(ymd, t) {
         return Math.floor((utcMs - offMin * 60000) / 1000);
     }
 
-    if (t.offset === "Z") {
-        return Math.floor(utcMs / 1000);
-    }
+    if (t.offset === "Z") return Math.floor(utcMs / 1000);
 
     const localMs = new Date(y, mo - 1, d, Number(t.HH), Number(t.MM), Number(t.SS), 0).getTime();
     return Math.floor(localMs / 1000);
 }
 
-async function setTicketHours(ticketId, valueInicio, valueFinal) {
-    const current = await apiClient.get(`${endpoints.ticketsEndpoint}/${ticketId}`);
-    const currentOptions = current?.data?.array_options || {};
-    const nextOptions = { ...currentOptions };
+async function findTicketByRef(ref) {
+    const target = normalizeRef(ref);
+    const limit = 50;
+    let page = 0;
+    const MAX_PAGES = 500;
 
+    console.log("[findTicketByRef] target:", target);
+
+    while (page < MAX_PAGES) {
+        console.log("[findTicketByRef] page:", page, "limit:", limit);
+
+        const res = await apiClient.get(endpoints.ticketsEndpoint, { params: { limit, page } });
+        const data = res.data;
+
+        console.log("[findTicketByRef] got:", Array.isArray(data) ? data.length : typeof data);
+
+        if (!Array.isArray(data) || data.length === 0) return null;
+
+        const found = data.find((t) => normalizeRef(t.ref) === target);
+        if (found) {
+            console.log("[findTicketByRef] FOUND ticket.id:", found.id, "ref:", found.ref);
+            return found;
+        }
+
+        page++;
+    }
+
+    console.log("[findTicketByRef] NOT FOUND after pages:", MAX_PAGES);
+    return null;
+}
+
+async function closeTicket(ticketId) {
+    const closeStatus = Number(process.env.DOLIBARR_CLOSE_STATUS || 8);
+    const url = `${endpoints.ticketsEndpoint}/${ticketId}`;
+
+    console.log("[closeTicket] url:", url, "fk_statut:", closeStatus);
+
+    const r = await apiClient.put(url, { fk_statut: closeStatus });
+
+    console.log("[closeTicket] response.status:", r?.status, "response.data keys:", r?.data ? Object.keys(r.data) : null);
+    return r?.data;
+}
+
+async function setTicketHours(ticketId, valueInicio, valueFinal) {
+    const url = `${endpoints.ticketsEndpoint}/${ticketId}`;
+
+    console.log("[setTicketHours] url:", url);
+    console.log("[setTicketHours] valueInicio:", valueInicio);
+    console.log("[setTicketHours] valueFinal:", valueFinal);
+
+    const current = await apiClient.get(url);
+    const currentOptions = current?.data?.array_options || {};
+
+    console.log("[setTicketHours] current.array_options:", currentOptions);
+
+    const nextOptions = { ...currentOptions };
     nextOptions.options_horadeinicio = valueInicio;
     nextOptions.options_horafinal = valueFinal;
 
-    await apiClient.put(`${endpoints.ticketsEndpoint}/${ticketId}`, {
-        array_options: nextOptions,
-    });
+    console.log("[setTicketHours] sending.array_options:", nextOptions);
 
-    const after = await apiClient.get(`${endpoints.ticketsEndpoint}/${ticketId}`);
-    return after.data?.array_options || null;
+    const putRes = await apiClient.put(url, { array_options: nextOptions });
+
+    console.log("[setTicketHours] put.status:", putRes?.status, "put.data keys:", putRes?.data ? Object.keys(putRes.data) : null);
+
+    const after = await apiClient.get(url);
+    console.log("[setTicketHours] after.array_options:", after?.data?.array_options || null);
+
+    return after?.data?.array_options || null;
 }
 
 export async function runCerrarTicket(req, res) {
     try {
         const body = req.body || {};
 
+        console.log("[runCerrarTicket] body keys:", Object.keys(body));
+        console.log("[runCerrarTicket] body:", JSON.stringify(body));
+
         const ticketRef = body.ticket_ref || body?.datos_tecnico?.ticket_ref || null;
+        console.log("[runCerrarTicket] ticketRef:", ticketRef);
+
         if (!ticketRef) return res.status(200).json({ status: "SIN ticket_ref" });
 
         const ticket = await findTicketByRef(ticketRef);
@@ -116,9 +148,17 @@ export async function runCerrarTicket(req, res) {
         const horaDeRaw = body.hora_de ?? body?.datos_tecnico?.hora_de ?? null;
         const horaARaw = body.hora_a ?? body?.datos_tecnico?.hora_a ?? null;
 
+        console.log("[runCerrarTicket] hora_de raw:", horaDeRaw);
+        console.log("[runCerrarTicket] hora_a raw:", horaARaw);
+
         const ymd = buildYMDFromKobo(body);
+        console.log("[runCerrarTicket] ymd:", ymd);
+
         const tDe = parseKoboHour(horaDeRaw);
         const tA = parseKoboHour(horaARaw);
+
+        console.log("[runCerrarTicket] tDe:", tDe);
+        console.log("[runCerrarTicket] tA:", tA);
 
         let hoursUpdated = false;
         let method = null;
@@ -126,31 +166,38 @@ export async function runCerrarTicket(req, res) {
         let hoursError = null;
 
         if (!ymd || !tDe || !tA) {
+            console.log("[runCerrarTicket] NO HOURS UPDATE: missing ymd/tDe/tA");
             return res.status(200).json({
                 ticketRef,
                 ticketId: ticket.id,
                 status: "CERRADO",
                 hoursUpdated: false,
-                motivo: "FALTAN dia/mes/anio o hora_de/hora_a o formato inválido",
-                recibido: { ymd, horaDeRaw, horaARaw },
+                recibido: { ymd, horaDeRaw, horaARaw, tDe, tA },
             });
         }
 
         const inicioStr = buildDolibarrDatetime(ymd, tDe);
         const finalStr = buildDolibarrDatetime(ymd, tA);
 
+        console.log("[runCerrarTicket] inicioStr:", inicioStr);
+        console.log("[runCerrarTicket] finalStr:", finalStr);
+
         try {
             const ao = await setTicketHours(ticket.id, inicioStr, finalStr);
             array_options_after = ao;
-            if (
-                ao?.options_horadeinicio === inicioStr &&
-                ao?.options_horafinal === finalStr
-            ) {
+
+            console.log("[runCerrarTicket] validate string saved:", {
+                savedInicio: ao?.options_horadeinicio,
+                savedFinal: ao?.options_horafinal,
+            });
+
+            if (ao?.options_horadeinicio === inicioStr && ao?.options_horafinal === finalStr) {
                 hoursUpdated = true;
                 method = "datetime_string";
             }
         } catch (e) {
             hoursError = e?.response?.data || e.message || String(e);
+            console.log("[runCerrarTicket] string hoursError:", hoursError);
         }
 
         if (!hoursUpdated) {
@@ -158,20 +205,36 @@ export async function runCerrarTicket(req, res) {
                 const inicioTs = toEpochSeconds(ymd, tDe);
                 const finalTs = toEpochSeconds(ymd, tA);
 
+                console.log("[runCerrarTicket] inicioTs:", inicioTs);
+                console.log("[runCerrarTicket] finalTs:", finalTs);
+
                 const ao2 = await setTicketHours(ticket.id, inicioTs, finalTs);
                 array_options_after = ao2;
 
+                console.log("[runCerrarTicket] validate epoch saved:", {
+                    savedInicio: ao2?.options_horadeinicio,
+                    savedFinal: ao2?.options_horafinal,
+                });
+
+                const savedInicio = ao2?.options_horadeinicio;
+                const savedFinal = ao2?.options_horafinal;
+
                 if (
-                    ao2?.options_horadeinicio === inicioTs ||
-                    ao2?.options_horadeinicio === String(inicioTs)
+                    savedInicio === inicioTs ||
+                    savedInicio === String(inicioTs) ||
+                    savedFinal === finalTs ||
+                    savedFinal === String(finalTs)
                 ) {
                     hoursUpdated = true;
                     method = "epoch_seconds";
                 }
             } catch (e2) {
                 hoursError = e2?.response?.data || e2.message || String(e2);
+                console.log("[runCerrarTicket] epoch hoursError:", hoursError);
             }
         }
+
+        console.log("[runCerrarTicket] DONE:", { hoursUpdated, method });
 
         return res.status(200).json({
             ticketRef,
@@ -184,8 +247,8 @@ export async function runCerrarTicket(req, res) {
             hoursError,
         });
     } catch (error) {
-        return res.status(500).json({
-            error: error?.response?.data || error.message || String(error),
-        });
+        const err = error?.response?.data || error.message || String(error);
+        console.log("[runCerrarTicket] FATAL:", err);
+        return res.status(500).json({ error: err });
     }
 }
