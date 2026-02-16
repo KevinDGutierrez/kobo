@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import axios from "axios";
 import { apiClient, endpoints } from "../service/api.js";
 
 const DEBUG = process.env.DEBUG_VISIT === "1";
@@ -17,21 +18,15 @@ function normLogin(x) {
     return String(x ?? "").trim().toLowerCase();
 }
 
-// Lee keys directas, dot notation (a.b.c) y keys con "/" (dolibarr/thirdparty_ref)
 function getValue(obj, key) {
     if (!obj) return undefined;
-
-    // key directa (incluye keys con "/")
     if (Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
-
-    // dot notation
     if (key.includes(".")) {
         return key.split(".").reduce((acc, k) => {
             if (acc && Object.prototype.hasOwnProperty.call(acc, k)) return acc[k];
             return undefined;
         }, obj);
     }
-
     return undefined;
 }
 
@@ -43,10 +38,59 @@ function firstNonEmpty(obj, keys) {
     return null;
 }
 
+function truncate128(s) {
+    const x = String(s ?? "").trim();
+    if (!x) return "";
+    return x.length > 128 ? x.slice(0, 128) : x;
+}
+
+function parseGeoPoint(raw) {
+    if (raw == null) return null;
+
+    if (Array.isArray(raw) && raw.length >= 2) {
+        const lat = Number(raw[0]);
+        const lon = Number(raw[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+        return { lat, lon };
+    }
+
+    const s = String(raw).trim().replace(/,/g, " ");
+    const parts = s.split(/\s+/).filter(Boolean);
+    if (parts.length < 2) return null;
+
+    const lat = Number(parts[0]);
+    const lon = Number(parts[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+    return { lat, lon };
+}
+
+async function reverseGeocode(lat, lon) {
+    const provider = (process.env.GEOCODE_PROVIDER || "nominatim").toLowerCase();
+
+    if (provider === "google") {
+        const key = process.env.GOOGLE_MAPS_API_KEY;
+        if (!key) return null;
+
+        const url = "https://maps.googleapis.com/maps/api/geocode/json";
+        const r = await axios.get(url, { params: { latlng: `${lat},${lon}`, key } });
+        const best = r?.data?.results?.[0]?.formatted_address || null;
+        return best;
+    }
+
+    const email = process.env.NOMINATIM_EMAIL || "no-reply@example.com";
+    const url = "https://nominatim.openstreetmap.org/reverse";
+    const r = await axios.get(url, {
+        params: { format: "jsonv2", lat, lon, zoom: 18, addressdetails: 1 },
+        headers: { "User-Agent": `kobo-dolibarr-integration/1.0 (${email})` },
+        timeout: 10000,
+    });
+    return r?.data?.display_name || null;
+}
+
 async function findThirdpartyByRef(ref, rid) {
     const target = norm(ref);
 
-    // 1) Intento por sqlfilters code_client
     try {
         const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.code_client:=:${encodeURIComponent(
             target
@@ -59,26 +103,9 @@ async function findThirdpartyByRef(ref, rid) {
 
         console.log(`[VISIT ${rid}] thirdparty search1 results: ${list.length}`);
 
-        // ✅ Match exacto (NO devolver el primero)
-        const exact = list.find(
-            (t) => norm(t?.code_client) === target || norm(t?.ref) === target
-        );
-
-        if (DEBUG && list.length) {
-            console.log(
-                `[VISIT ${rid}] thirdparty search1 sample:`,
-                list
-                    .slice(0, 10)
-                    .map((t) => `${t?.id}:${t?.code_client || ""}:${t?.name || ""}`)
-                    .join(" | ")
-            );
-        }
+        const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
 
         if (exact) return exact;
-
-        console.log(
-            `[VISIT ${rid}] thirdparty search1: NO exact match for "${target}", will fallback paging`
-        );
     } catch (e) {
         console.log(
             `[VISIT ${rid}] thirdparty search1 ERROR:`,
@@ -87,24 +114,15 @@ async function findThirdpartyByRef(ref, rid) {
         );
     }
 
-    // 2) Fallback paginando (match exacto)
     const limit = 50;
     let page = 0;
 
     while (true) {
-        if (DEBUG) console.log(`[VISIT ${rid}] thirdparty paging page=${page}`);
-
-        const res = await apiClient.get(endpoints.thirdpartiesEndpoint, {
-            params: { limit, page },
-        });
-
+        const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
         const list = asArray(res.data);
         if (!list.length) return null;
 
-        const found = list.find(
-            (t) => norm(t?.code_client) === target || norm(t?.ref) === target
-        );
-
+        const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
         if (found) return found;
 
         page++;
@@ -115,11 +133,8 @@ async function findThirdpartyByRef(ref, rid) {
 async function findUserByLogin(login, rid) {
     const target = normLogin(login);
 
-    // 1) Intento por sqlfilters login
     try {
-        const url = `${endpoints.usersEndpoint}?sqlfilters=(t.login:=:${encodeURIComponent(
-            login
-        )})`;
+        const url = `${endpoints.usersEndpoint}?sqlfilters=(t.login:=:${encodeURIComponent(login)})`;
 
         if (DEBUG) console.log(`[VISIT ${rid}] user search url1: ${url}`);
 
@@ -128,26 +143,8 @@ async function findUserByLogin(login, rid) {
 
         console.log(`[VISIT ${rid}] user search1 results: ${list.length}`);
 
-        // ✅ Match exacto por login (NO devolver el primero)
-        const exact = list.find(
-            (u) => normLogin(u?.login) === target
-        );
-
-        if (DEBUG && list.length) {
-            console.log(
-                `[VISIT ${rid}] user search1 logins sample:`,
-                list
-                    .slice(0, 15)
-                    .map((u) => `${u?.id}:${u?.login || ""}:${u?.firstname || ""} ${u?.lastname || ""}`)
-                    .join(" | ")
-            );
-        }
-
+        const exact = list.find((u) => normLogin(u?.login) === target);
         if (exact) return exact;
-
-        console.log(
-            `[VISIT ${rid}] user search1: NO exact match for login="${target}", will fallback paging`
-        );
     } catch (e) {
         console.log(
             `[VISIT ${rid}] user search1 ERROR:`,
@@ -156,17 +153,11 @@ async function findUserByLogin(login, rid) {
         );
     }
 
-    // 2) Fallback paginando (match exacto)
     const limit = 50;
     let page = 0;
 
     while (true) {
-        if (DEBUG) console.log(`[VISIT ${rid}] user paging page=${page}`);
-
-        const res = await apiClient.get(endpoints.usersEndpoint, {
-            params: { limit, page },
-        });
-
+        const res = await apiClient.get(endpoints.usersEndpoint, { params: { limit, page } });
         const list = asArray(res.data);
         if (!list.length) return null;
 
@@ -178,9 +169,6 @@ async function findUserByLogin(login, rid) {
     }
 }
 
-/**
- * POST /visit/run
- */
 export async function crearVisita(req, res) {
     const rid = crypto.randomUUID();
 
@@ -190,22 +178,12 @@ export async function crearVisita(req, res) {
 
         const body = req.body || {};
         const keys = Object.keys(body);
-        console.log(
-            `[VISIT ${rid}] body keys count=${keys.length} sample=${keys
-                .slice(0, 30)
-                .join(", ")}`
-        );
+        console.log(`[VISIT ${rid}] body keys count=${keys.length} sample=${keys.slice(0, 30).join(", ")}`);
 
         if (DEBUG && req.rawBody) {
-            console.log(
-                `[VISIT ${rid}] rawBody(0..${RAW_LOG_MAX}): ${String(req.rawBody).slice(
-                    0,
-                    RAW_LOG_MAX
-                )}`
-            );
+            console.log(`[VISIT ${rid}] rawBody(0..${RAW_LOG_MAX}): ${String(req.rawBody).slice(0, RAW_LOG_MAX)}`);
         }
 
-        // KoBo manda keys aplanadas como "dolibarr/thirdparty_ref" y "dolibarr/asesor_login"
         const thirdpartyRef = firstNonEmpty(body, [
             "thirdparty_ref",
             "tercero_ref",
@@ -233,57 +211,50 @@ export async function crearVisita(req, res) {
         ]);
 
         const label =
-            firstNonEmpty(body, [
-                "label",
-                "titulo",
-                "dolibarr/label",
-                "dolibarr/titulo",
-                "dolibarr.label",
-                "dolibarr.titulo",
-            ]) || (thirdpartyRef ? `Visita - ${thirdpartyRef}` : "Visita");
+            firstNonEmpty(body, ["label", "titulo", "dolibarr/label", "dolibarr/titulo", "dolibarr.label", "dolibarr.titulo"]) ||
+            (thirdpartyRef ? `Visita - ${thirdpartyRef}` : "Visita");
 
-        const note =
-            firstNonEmpty(body, [
-                "note",
-                "descripcion",
-                "dolibarr/descripcion",
-                "dolibarr.descripcion",
-            ]) || "";
+        const note = firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion"]) || "";
 
-        console.log(
-            `[VISIT ${rid}] extracted thirdpartyRef=${thirdpartyRef} asesorLogin=${asesorLogin}`
-        );
+        const ubicacionRaw = firstNonEmpty(body, [
+            "ubicacion_gps",
+            "gps_inicio",
+            "ubicacion_gps/gps",
+            "ubicacion",
+            "_geolocation",
+        ]);
 
-        if (!thirdpartyRef)
-            return res.status(200).json({ status: "SIN thirdparty_ref" });
-        if (!asesorLogin)
-            return res.status(200).json({ status: "SIN asesor_login" });
+        console.log(`[VISIT ${rid}] extracted thirdpartyRef=${thirdpartyRef} asesorLogin=${asesorLogin}`);
 
-        // Buscar tercero (match exacto)
+        if (!thirdpartyRef) return res.status(200).json({ status: "SIN thirdparty_ref" });
+        if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
+
         const tercero = await findThirdpartyByRef(thirdpartyRef, rid);
-        console.log(
-            `[VISIT ${rid}] thirdparty found? ${!!tercero} id=${tercero?.id} code_client=${tercero?.code_client} name=${tercero?.name}`
-        );
+        console.log(`[VISIT ${rid}] thirdparty found? ${!!tercero} id=${tercero?.id}`);
 
-        if (!tercero) {
-            return res
-                .status(200)
-                .json({ thirdpartyRef, status: "TERCERO NO EXISTE" });
-        }
+        if (!tercero) return res.status(200).json({ thirdpartyRef, status: "TERCERO NO EXISTE" });
 
-        // Buscar usuario por login (match exacto)
         const user = await findUserByLogin(asesorLogin, rid);
-        console.log(
-            `[VISIT ${rid}] user found? ${!!user} id=${user?.id} login=${user?.login}`
-        );
+        console.log(`[VISIT ${rid}] user found? ${!!user} id=${user?.id} login=${user?.login}`);
 
-        if (!user) {
-            return res
-                .status(200)
-                .json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
+        if (!user) return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
+
+        let locationText = firstNonEmpty(body, ["ubicacion_texto", "ubicacion_direccion", "direccion", "location_text"]);
+        if (!locationText) {
+            const gp = parseGeoPoint(ubicacionRaw);
+            console.log(`[VISIT ${rid}] ubicacionRaw=${String(ubicacionRaw)} parsed=${gp ? `${gp.lat},${gp.lon}` : "null"}`);
+
+            if (gp) {
+                try {
+                    const addr = await reverseGeocode(gp.lat, gp.lon);
+                    locationText = addr || null;
+                    console.log(`[VISIT ${rid}] reverseGeocode -> ${locationText ? "OK" : "NULL"}`);
+                } catch (e) {
+                    console.log(`[VISIT ${rid}] reverseGeocode ERROR:`, e?.message || String(e));
+                }
+            }
         }
 
-        // Fecha automática (unix timestamp en segundos)
         const now = Math.floor(Date.now() / 1000);
 
         const payload = {
@@ -294,19 +265,14 @@ export async function crearVisita(req, res) {
             note,
             datep: now,
             datef: now,
+            location: truncate128(locationText),
         };
 
-        console.log(
-            `[VISIT ${rid}] POST ${endpoints.agendaEventsEndpoint} payload=`,
-            JSON.stringify(payload)
-        );
+        console.log(`[VISIT ${rid}] POST ${endpoints.agendaEventsEndpoint} payload=${JSON.stringify(payload)}`);
 
         const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
 
-        console.log(
-            `[VISIT ${rid}] CREATED response status=${created.status} data=`,
-            JSON.stringify(created.data)
-        );
+        console.log(`[VISIT ${rid}] CREATED status=${created.status} data=${JSON.stringify(created.data)}`);
 
         return res.status(200).json({
             status: "VISITA CREADA",
@@ -317,14 +283,13 @@ export async function crearVisita(req, res) {
             asesorLogin,
             userId: user.id,
             userLogin: user.login,
+            location: payload.location,
         });
     } catch (error) {
         const status = error?.response?.status;
         const data = error?.response?.data;
 
-        console.log(
-            `[VISIT ${rid}] ERROR status=${status} message=${error?.message}`
-        );
+        console.log(`[VISIT ${rid}] ERROR status=${status} message=${error?.message}`);
         if (data) console.log(`[VISIT ${rid}] ERROR data=`, JSON.stringify(data));
 
         return res.status(500).json({
