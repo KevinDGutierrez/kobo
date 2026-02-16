@@ -65,6 +65,60 @@ function parseGeoPoint(raw) {
     return { lat, lon };
 }
 
+function uniqJoin(parts, sep = ", ") {
+    const out = [];
+    const seen = new Set();
+    for (const p of parts) {
+        const v = String(p ?? "").trim();
+        if (!v) continue;
+        const key = v.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(v);
+    }
+    return out.join(sep);
+}
+
+function pickBestZona(addr) {
+    try {
+        const s = JSON.stringify(addr || {});
+        const re = /zona\s*(\d{1,2})/gi;
+        let m;
+        const nums = [];
+        while ((m = re.exec(s))) nums.push(Number(m[1]));
+        if (!nums.length) return null;
+        const best = Math.max(...nums);
+        return `Zona ${best}`;
+    } catch {
+        return null;
+    }
+}
+
+function buildGtAddress(addr) {
+    if (!addr) return null;
+
+    const road = addr.road || addr.pedestrian || addr.footway || addr.path || "";
+    const house = addr.house_number || "";
+    const suburb = addr.neighbourhood || addr.suburb || addr.quarter || "";
+    const city =
+        addr.city || addr.town || addr.village || addr.municipality || "Ciudad de Guatemala";
+    const state = addr.state || "Guatemala";
+
+    const zona = pickBestZona(addr);
+
+    const line1 = uniqJoin([road, house], " ").trim();
+
+    const parts = [
+        line1,
+        zona,
+        suburb && (!zona || suburb.toLowerCase() !== zona.toLowerCase()) ? suburb : null,
+        city,
+        state,
+    ];
+
+    return uniqJoin(parts);
+}
+
 async function reverseGeocode(lat, lon) {
     const provider = (process.env.GEOCODE_PROVIDER || "nominatim").toLowerCase();
 
@@ -80,12 +134,16 @@ async function reverseGeocode(lat, lon) {
 
     const email = process.env.NOMINATIM_EMAIL || "no-reply@example.com";
     const url = "https://nominatim.openstreetmap.org/reverse";
+
     const r = await axios.get(url, {
         params: { format: "jsonv2", lat, lon, zoom: 18, addressdetails: 1 },
         headers: { "User-Agent": `kobo-dolibarr-integration/1.0 (${email})` },
         timeout: 10000,
     });
-    return r?.data?.display_name || null;
+
+    const addr = r?.data?.address || null;
+    const pretty = buildGtAddress(addr);
+    return pretty || r?.data?.display_name || null;
 }
 
 async function findThirdpartyByRef(ref, rid) {
@@ -178,10 +236,14 @@ export async function crearVisita(req, res) {
 
         const body = req.body || {};
         const keys = Object.keys(body);
-        console.log(`[VISIT ${rid}] body keys count=${keys.length} sample=${keys.slice(0, 30).join(", ")}`);
+        console.log(
+            `[VISIT ${rid}] body keys count=${keys.length} sample=${keys.slice(0, 30).join(", ")}`
+        );
 
         if (DEBUG && req.rawBody) {
-            console.log(`[VISIT ${rid}] rawBody(0..${RAW_LOG_MAX}): ${String(req.rawBody).slice(0, RAW_LOG_MAX)}`);
+            console.log(
+                `[VISIT ${rid}] rawBody(0..${RAW_LOG_MAX}): ${String(req.rawBody).slice(0, RAW_LOG_MAX)}`
+            );
         }
 
         const thirdpartyRef = firstNonEmpty(body, [
@@ -211,18 +273,20 @@ export async function crearVisita(req, res) {
         ]);
 
         const label =
-            firstNonEmpty(body, ["label", "titulo", "dolibarr/label", "dolibarr/titulo", "dolibarr.label", "dolibarr.titulo"]) ||
-            (thirdpartyRef ? `Visita - ${thirdpartyRef}` : "Visita");
+            firstNonEmpty(body, [
+                "label",
+                "titulo",
+                "dolibarr/label",
+                "dolibarr/titulo",
+                "dolibarr.label",
+                "dolibarr.titulo",
+            ]) || (thirdpartyRef ? `Visita - ${thirdpartyRef}` : "Visita");
 
-        const note = firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion"]) || "";
+        const note =
+            firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion"]) ||
+            "";
 
-        const ubicacionRaw = firstNonEmpty(body, [
-            "ubicacion_gps",
-            "gps_inicio",
-            "ubicacion_gps/gps",
-            "ubicacion",
-            "_geolocation",
-        ]);
+        const ubicacionRaw = firstNonEmpty(body, ["ubicacion_gps", "gps_inicio", "ubicacion", "_geolocation"]);
 
         console.log(`[VISIT ${rid}] extracted thirdpartyRef=${thirdpartyRef} asesorLogin=${asesorLogin}`);
 
@@ -242,7 +306,9 @@ export async function crearVisita(req, res) {
         let locationText = firstNonEmpty(body, ["ubicacion_texto", "ubicacion_direccion", "direccion", "location_text"]);
         if (!locationText) {
             const gp = parseGeoPoint(ubicacionRaw);
-            console.log(`[VISIT ${rid}] ubicacionRaw=${String(ubicacionRaw)} parsed=${gp ? `${gp.lat},${gp.lon}` : "null"}`);
+            console.log(
+                `[VISIT ${rid}] ubicacionRaw=${String(ubicacionRaw)} parsed=${gp ? `${gp.lat},${gp.lon}` : "null"}`
+            );
 
             if (gp) {
                 try {
