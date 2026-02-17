@@ -153,14 +153,8 @@ async function findThirdpartyByRef(ref, rid) {
         const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.code_client:=:${encodeURIComponent(
             target
         )})`;
-
-        if (DEBUG) console.log(`[VISIT ${rid}] thirdparty search url1: ${url}`);
-
         const res = await apiClient.get(url);
         const list = asArray(res.data);
-
-        console.log(`[VISIT ${rid}] thirdparty search1 results: ${list.length}`);
-
         const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
 
         if (exact) return exact;
@@ -193,14 +187,8 @@ async function findUserByLogin(login, rid) {
 
     try {
         const url = `${endpoints.usersEndpoint}?sqlfilters=(t.login:=:${encodeURIComponent(login)})`;
-
-        if (DEBUG) console.log(`[VISIT ${rid}] user search url1: ${url}`);
-
         const res = await apiClient.get(url);
         const list = asArray(res.data);
-
-        console.log(`[VISIT ${rid}] user search1 results: ${list.length}`);
-
         const exact = list.find((u) => normLogin(u?.login) === target);
         if (exact) return exact;
     } catch (e) {
@@ -231,21 +219,8 @@ export async function crearVisita(req, res) {
     const rid = crypto.randomUUID();
 
     try {
-        console.log(`[VISIT ${rid}] START /visit/run`);
-        console.log(`[VISIT ${rid}] content-type: ${req.headers["content-type"]}`);
-
         const body = req.body || {};
         const keys = Object.keys(body);
-        console.log(
-            `[VISIT ${rid}] body keys count=${keys.length} sample=${keys.slice(0, 30).join(", ")}`
-        );
-
-        if (DEBUG && req.rawBody) {
-            console.log(
-                `[VISIT ${rid}] rawBody(0..${RAW_LOG_MAX}): ${String(req.rawBody).slice(0, RAW_LOG_MAX)}`
-            );
-        }
-
         const thirdpartyRef = firstNonEmpty(body, [
             "thirdparty_ref",
             "tercero_ref",
@@ -288,33 +263,25 @@ export async function crearVisita(req, res) {
 
         const ubicacionRaw = firstNonEmpty(body, ["ubicacion_gps", "gps_inicio", "ubicacion", "_geolocation"]);
 
-        console.log(`[VISIT ${rid}] extracted thirdpartyRef=${thirdpartyRef} asesorLogin=${asesorLogin}`);
-
         if (!thirdpartyRef) return res.status(200).json({ status: "SIN thirdparty_ref" });
         if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
         const tercero = await findThirdpartyByRef(thirdpartyRef, rid);
-        console.log(`[VISIT ${rid}] thirdparty found? ${!!tercero} id=${tercero?.id}`);
 
         if (!tercero) return res.status(200).json({ thirdpartyRef, status: "TERCERO NO EXISTE" });
 
         const user = await findUserByLogin(asesorLogin, rid);
-        console.log(`[VISIT ${rid}] user found? ${!!user} id=${user?.id} login=${user?.login}`);
 
         if (!user) return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
 
         let locationText = firstNonEmpty(body, ["ubicacion_texto", "ubicacion_direccion", "direccion", "location_text"]);
         if (!locationText) {
             const gp = parseGeoPoint(ubicacionRaw);
-            console.log(
-                `[VISIT ${rid}] ubicacionRaw=${String(ubicacionRaw)} parsed=${gp ? `${gp.lat},${gp.lon}` : "null"}`
-            );
-
+            
             if (gp) {
                 try {
                     const addr = await reverseGeocode(gp.lat, gp.lon);
                     locationText = addr || null;
-                    console.log(`[VISIT ${rid}] reverseGeocode -> ${locationText ? "OK" : "NULL"}`);
                 } catch (e) {
                     console.log(`[VISIT ${rid}] reverseGeocode ERROR:`, e?.message || String(e));
                 }
@@ -334,11 +301,7 @@ export async function crearVisita(req, res) {
             location: truncate128(locationText),
         };
 
-        console.log(`[VISIT ${rid}] POST ${endpoints.agendaEventsEndpoint} payload=${JSON.stringify(payload)}`);
-
         const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
-
-        console.log(`[VISIT ${rid}] CREATED status=${created.status} data=${JSON.stringify(created.data)}`);
 
         return res.status(200).json({
             status: "VISITA CREADA",
