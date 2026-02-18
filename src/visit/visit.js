@@ -104,7 +104,6 @@ function buildGtAddress(addr) {
   const state = addr.state || "Guatemala";
 
   const zona = pickBestZona(addr);
-
   const line1 = uniqJoin([road, house], " ").trim();
 
   const parts = [
@@ -153,11 +152,10 @@ async function findThirdpartyByRef(ref, rid) {
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-
     if (exact) return exact;
   } catch (e) {
     console.log(
-      `[VISIT ${rid}] thirdparty search1 ERROR:`,
+      `[VISIT ${rid}] thirdparty search(ref) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
@@ -172,6 +170,52 @@ async function findThirdpartyByRef(ref, rid) {
     if (!list.length) return null;
 
     const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
+    if (found) return found;
+
+    page++;
+    if (page > 300) return null;
+  }
+}
+
+async function findThirdpartyByName(nombre, rid) {
+  const raw = String(nombre ?? "").trim();
+  if (!raw) return null;
+
+  const target = raw.toLowerCase();
+
+  try {
+    const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:=:${encodeURIComponent(raw)})`;
+    const res = await apiClient.get(url);
+    const list = asArray(res.data);
+
+    const exact = list.find((t) => {
+      const n = String(t?.nom ?? t?.name ?? "").trim().toLowerCase();
+      return n === target;
+    });
+
+    if (exact) return exact;
+
+    if (list.length) return list[0];
+  } catch (e) {
+    console.log(
+      `[VISIT ${rid}] thirdparty search(name) ERROR:`,
+      e?.response?.status,
+      JSON.stringify(e?.response?.data || e.message)
+    );
+  }
+
+  const limit = 50;
+  let page = 0;
+
+  while (true) {
+    const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
+    const list = asArray(res.data);
+    if (!list.length) return null;
+
+    const found = list.find((t) => {
+      const n = String(t?.nom ?? t?.name ?? "").trim().toLowerCase();
+      return n === target;
+    });
     if (found) return found;
 
     page++;
@@ -217,7 +261,6 @@ export async function crearVisita(req, res) {
 
   try {
     const body = req.body || {};
-    const keys = Object.keys(body);
 
     const thirdpartyRef = firstNonEmpty(body, [
       "thirdparty_ref",
@@ -230,6 +273,18 @@ export async function crearVisita(req, res) {
       "datos_visita/tercero_ref",
       "datos_visita.thirdparty_ref",
       "datos_visita.tercero_ref",
+    ]);
+
+    const nombreCliente = firstNonEmpty(body, [
+      "nombre_cliente",
+      "cliente_nombre",
+      "nom",
+      "dolibarr/nombre_cliente",
+      "dolibarr/nom",
+      "dolibarr.nombre_cliente",
+      "dolibarr.nom",
+      "datos_visita/nombre_cliente",
+      "datos_visita.nombre_cliente",
     ]);
 
     const asesorLogin = firstNonEmpty(body, [
@@ -248,7 +303,7 @@ export async function crearVisita(req, res) {
     const label = "Visita de ventas";
 
     const note =
-      firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion", "resultado.de.la.visita"]) || "";
+      firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion"]) || "";
 
     const ubicacionRaw = firstNonEmpty(body, [
       "ubicacion_gps",
@@ -257,11 +312,25 @@ export async function crearVisita(req, res) {
       "_geolocation",
     ]);
 
-    if (!thirdpartyRef) return res.status(200).json({ status: "SIN thirdparty_ref" });
+    if (!thirdpartyRef && !nombreCliente) {
+      return res.status(200).json({ status: "SIN thirdparty_ref NI nombre_cliente" });
+    }
     if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
-    const tercero = await findThirdpartyByRef(thirdpartyRef, rid);
-    if (!tercero) return res.status(200).json({ thirdpartyRef, status: "TERCERO NO EXISTE" });
+    let tercero = null;
+    if (thirdpartyRef) {
+      tercero = await findThirdpartyByRef(thirdpartyRef, rid);
+    } else {
+      tercero = await findThirdpartyByName(nombreCliente, rid);
+    }
+
+    if (!tercero) {
+      return res.status(200).json({
+        status: "TERCERO NO EXISTE",
+        thirdpartyRef: thirdpartyRef || null,
+        nombreCliente: nombreCliente || null,
+      });
+    }
 
     const user = await findUserByLogin(asesorLogin, rid);
     if (!user) return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
@@ -275,7 +344,6 @@ export async function crearVisita(req, res) {
 
     if (!locationText) {
       const gp = parseGeoPoint(ubicacionRaw);
-
       if (gp) {
         try {
           const addr = await reverseGeocode(gp.lat, gp.lon);
@@ -304,9 +372,10 @@ export async function crearVisita(req, res) {
     return res.status(200).json({
       status: "VISITA CREADA",
       eventId: created.data,
-      thirdpartyRef,
       thirdpartyId: tercero.id,
-      thirdpartyName: tercero.name,
+      thirdpartyName: tercero.nom || tercero.name || tercero.ref || null,
+      thirdpartyRef: thirdpartyRef || null,
+      nombreCliente: nombreCliente || null,
       asesorLogin,
       userId: user.id,
       userLogin: user.login,
