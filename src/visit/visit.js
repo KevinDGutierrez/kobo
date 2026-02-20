@@ -155,38 +155,41 @@ async function findThirdpartyByRef(ref, rid) {
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-
     if (exact) return exact;
   } catch (e) {
     console.log(
-      `[VISIT ${rid}] thirdparty search(ref) ERROR:`,
+      `[VISIT ${rid}] thirdparty search(ref sql) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
+    if (e?.response?.status === 404) return null;
   }
 
   const limit = 50;
   let page = 0;
 
   while (true) {
-    const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
-    const list = asArray(res.data);
-    if (!list.length) return null;
+    try {
+      const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
+      const list = asArray(res.data);
+      if (!list.length) return null;
 
-    const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-    if (found) return found;
+      const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
+      if (found) return found;
 
-    page++;
-    if (page > 300) return null;
+      page++;
+      if (page > 300) return null;
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] thirdparty paging(ref) ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return null; 
+    }
   }
 }
 
-/* ==============================
-   ✅ NUEVO: búsqueda tipo Dolibarr (parcial) pero sin “adivinar”
-   - usa LIKE para traer candidatos
-   - elige el mejor por tokens/frase
-   - solo acepta si gana claramente al segundo
-================================ */
 
 function normText(s) {
   return String(s ?? "")
@@ -212,27 +215,15 @@ function scoreByQuery(candidateNameRaw, queryRaw) {
 
   let score = 0;
 
-  // Frase completa
   if (cand.includes(q)) score += 500;
   if (cand.startsWith(q)) score += 200;
 
-  // Tokens: debe contener todos para ser “muy bueno”
-  let matched = 0;
   for (const tk of qTokens) {
-    if (cTokens.has(tk)) {
-      matched++;
-      score += 120;
-    } else {
-      // penaliza fuerte si falta un token (ej: falta "dr")
-      score -= 250;
-    }
+    if (cTokens.has(tk)) score += 120;
+    else score -= 250; 
   }
 
-  // Bonus si matchea todos los tokens
-  if (matched === qTokens.length) score += 200;
-
-  // Pequeña penalización por nombres MUY largos cuando el query es corto (evita basura)
-  if (qTokens.length <= 2 && cand.length > 40) score -= 20;
+  if (qTokens.length && qTokens.every((t) => cTokens.has(t))) score += 200;
 
   return score;
 }
@@ -241,102 +232,87 @@ async function findThirdpartyByNameSmart(nombre, rid) {
   const query = String(nombre ?? "").trim();
   if (!query) return null;
 
-  // Helper para escoger el mejor candidato con margen
   function pickBest(list) {
     const scored = list
       .map((t) => {
         const n = String(t?.nom ?? t?.name ?? "").trim();
-        return {
-          t,
-          name: n,
-          score: scoreByQuery(n, query),
-        };
+        return { t, name: n, score: scoreByQuery(n, query) };
       })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score);
 
-    if (!scored.length) return { best: null };
+    if (!scored.length) return null;
 
     const best = scored[0];
     const second = scored[1];
 
-    // Umbral mínimo y diferencia mínima para “estar seguro”
-    const MIN = 250; // con 2 tokens ("dr miguel") normalmente el correcto pasa esto
+    const MIN = 250;
     const GAP = 120;
 
-    if (best.score < MIN) return { best: null };
+    if (best.score < MIN) return null;
+    if (second && best.score - second.score < GAP) return null;
 
-    if (second && best.score - second.score < GAP) {
-      console.log(
-        `[VISIT ${rid}] AMBIGUO por nombre "${query}"`,
-        scored.slice(0, 5).map((x) => ({ id: x.t?.id, name: x.name, score: x.score }))
-      );
-      return { best: null };
-    }
-
-    return { best: best.t };
+    return best.t;
   }
 
-  // 1) Intento rápido: LIKE (como el buscador de Dolibarr)
   try {
     const like = `%${query}%`;
-
-    // Si tu Dolibarr usa t.name en vez de t.nom, cambia aquí a t.name
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(
       like
     )})`;
-
     const res = await apiClient.get(url);
     const list = asArray(res.data);
-
-    const picked = pickBest(list);
-    if (picked.best) return picked.best;
+    const best = pickBest(list);
+    if (best) return best;
   } catch (e) {
     console.log(
       `[VISIT ${rid}] thirdparty search(name like) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
+    if (e?.response?.status === 404) return null;
   }
 
-  // 2) Fallback: paginación y escoger el mejor por score (sin agarrar el primero)
   const limit = 50;
   let page = 0;
+
   let best = null;
   let bestScore = 0;
-  let secondBestScore = 0;
+  let secondBest = 0;
 
   while (true) {
-    const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
-    const list = asArray(res.data);
-    if (!list.length) break;
+    try {
+      const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
+      const list = asArray(res.data);
+      if (!list.length) break;
 
-    for (const t of list) {
-      const n = String(t?.nom ?? t?.name ?? "").trim();
-      const s = scoreByQuery(n, query);
-      if (s > bestScore) {
-        secondBestScore = bestScore;
-        bestScore = s;
-        best = t;
-      } else if (s > secondBestScore) {
-        secondBestScore = s;
+      for (const t of list) {
+        const n = String(t?.nom ?? t?.name ?? "").trim();
+        const s = scoreByQuery(n, query);
+        if (s > bestScore) {
+          secondBest = bestScore;
+          bestScore = s;
+          best = t;
+        } else if (s > secondBest) {
+          secondBest = s;
+        }
       }
-    }
 
-    page++;
-    if (page > 300) break;
+      page++;
+      if (page > 300) break;
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] thirdparty paging(name) ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return null; 
+    }
   }
 
   const MIN = 250;
   const GAP = 120;
-
-  if (bestScore >= MIN && bestScore - secondBestScore >= GAP) return best;
-
-  if (DEBUG) {
-    console.log(
-      `[VISIT ${rid}] NO MATCH SEGURO por nombre="${query}" bestScore=${bestScore} second=${secondBestScore}`
-    );
-  }
+  if (bestScore >= MIN && bestScore - secondBest >= GAP) return best;
 
   return null;
 }
@@ -352,25 +328,35 @@ async function findUserByLogin(login, rid) {
     if (exact) return exact;
   } catch (e) {
     console.log(
-      `[VISIT ${rid}] user search1 ERROR:`,
+      `[VISIT ${rid}] user search(sql) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
+    if (e?.response?.status === 404) return null;
   }
 
   const limit = 50;
   let page = 0;
 
   while (true) {
-    const res = await apiClient.get(endpoints.usersEndpoint, { params: { limit, page } });
-    const list = asArray(res.data);
-    if (!list.length) return null;
+    try {
+      const res = await apiClient.get(endpoints.usersEndpoint, { params: { limit, page } });
+      const list = asArray(res.data);
+      if (!list.length) return null;
 
-    const found = list.find((u) => normLogin(u?.login) === target);
-    if (found) return found;
+      const found = list.find((u) => normLogin(u?.login) === target);
+      if (found) return found;
 
-    page++;
-    if (page > 300) return null;
+      page++;
+      if (page > 300) return null;
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] user paging ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return null;
+    }
   }
 }
 
@@ -426,29 +412,29 @@ export async function crearVisita(req, res) {
 
     const ubicacionRaw = firstNonEmpty(body, ["ubicacion_gps", "gps_inicio", "ubicacion", "_geolocation"]);
 
-    if (!thirdpartyRef && !nombreCliente) {
-      return res.status(200).json({ status: "SIN thirdparty_ref NI nombre_cliente" });
-    }
     if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
     const user = await findUserByLogin(asesorLogin, rid);
     if (!user) return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
 
-    // ✅ Resolver tercero por código o por búsqueda parcial “tipo Dolibarr”
     let tercero = null;
     let terceroModo = "SIN_CLIENTE";
 
     if (thirdpartyRef) {
       tercero = await findThirdpartyByRef(thirdpartyRef, rid);
-      if (!tercero) return res.status(200).json({ thirdpartyRef, status: "TERCERO NO EXISTE (POR CODIGO)" });
-      terceroModo = "ASOCIADO_POR_CODIGO";
+      if (tercero) terceroModo = "ASOCIADO_POR_CODIGO";
     } else if (nombreCliente) {
       tercero = await findThirdpartyByNameSmart(nombreCliente, rid);
       if (tercero) terceroModo = "ASOCIADO_POR_NOMBRE_PARCIAL";
-      // si no hay match seguro, NO se asocia (pero se crea el evento igual)
     }
 
-    let locationText = firstNonEmpty(body, ["ubicacion_texto", "ubicacion_direccion", "direccion", "location_text"]);
+    let locationText = firstNonEmpty(body, [
+      "ubicacion_texto",
+      "ubicacion_direccion",
+      "direccion",
+      "location_text",
+    ]);
+
     if (!locationText) {
       const gp = parseGeoPoint(ubicacionRaw);
       if (gp) {
@@ -473,7 +459,6 @@ export async function crearVisita(req, res) {
       location: truncate128(locationText),
     };
 
-    // socid SOLO si se encontró tercero de forma “segura”
     if (tercero?.id) payload.socid = Number(tercero.id);
 
     const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
@@ -481,13 +466,11 @@ export async function crearVisita(req, res) {
     return res.status(200).json({
       status: "VISITA CREADA",
       eventId: created.data,
-
       terceroModo,
       thirdpartyId: tercero?.id ?? null,
       thirdpartyName: tercero ? (tercero.nom || tercero.name || tercero.ref || null) : null,
       thirdpartyRef: thirdpartyRef || null,
       nombreCliente: nombreCliente || null,
-
       asesorLogin,
       userId: user.id,
       userLogin: user.login,
