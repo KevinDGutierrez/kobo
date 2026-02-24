@@ -157,37 +157,16 @@ async function findThirdpartyByRef(ref, rid) {
     const list = asArray(res.data);
     const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
     if (exact) return exact;
+    return null;
   } catch (e) {
+    if (e?.response?.status === 404) return null;
+
     console.log(
       `[VISIT ${rid}] thirdparty search(ref sql) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    if (e?.response?.status === 404) return null;
-  }
-
-  const limit = 50;
-  let page = 0;
-
-  while (true) {
-    try {
-      const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
-      const list = asArray(res.data);
-      if (!list.length) return null;
-
-      const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-      if (found) return found;
-
-      page++;
-      if (page > 300) return null;
-    } catch (e) {
-      console.log(
-        `[VISIT ${rid}] thirdparty paging(ref) ERROR:`,
-        e?.response?.status,
-        JSON.stringify(e?.response?.data || e.message)
-      );
-      return null;
-    }
+    return null;
   }
 }
 
@@ -205,25 +184,35 @@ function splitTokens(s) {
   return t ? t.split(" ").filter(Boolean) : [];
 }
 
+function compact(s) {
+  return normText(s).replace(/\s+/g, "");
+}
+
 function scoreByQuery(candidateNameRaw, queryRaw) {
   const cand = normText(candidateNameRaw);
   const q = normText(queryRaw);
   if (!cand || !q) return 0;
+
+  const candCompact = compact(cand);
+  const qCompact = compact(q);
 
   const qTokens = splitTokens(q);
   const cTokens = new Set(splitTokens(cand));
 
   let score = 0;
 
-  if (cand.includes(q)) score += 500;
-  if (cand.startsWith(q)) score += 200;
+  if (cand.includes(q)) score += 600;
+  if (cand.startsWith(q)) score += 250;
+
+  if (candCompact.includes(qCompact)) score += 500;
+  if (candCompact.startsWith(qCompact)) score += 200;
 
   for (const tk of qTokens) {
-    if (cTokens.has(tk)) score += 120;
-    else score -= 250;
+    if (cTokens.has(tk)) score += 130;
+    else score -= 260;
   }
 
-  if (qTokens.length && qTokens.every((t) => cTokens.has(t))) score += 200;
+  if (qTokens.length && qTokens.every((t) => cTokens.has(t))) score += 220;
 
   return score;
 }
@@ -246,8 +235,8 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     const best = scored[0];
     const second = scored[1];
 
-    const MIN = 250;
-    const GAP = 120;
+    const MIN = 260;
+    const GAP = 140;
 
     if (best.score < MIN) return null;
     if (second && best.score - second.score < GAP) return null;
@@ -256,21 +245,22 @@ async function findThirdpartyByNameSmart(nombre, rid) {
   }
 
   try {
-    const like = `%${query}%`;
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(
-      like
+      query
     )})`;
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const best = pickBest(list);
     if (best) return best;
+    return null;
   } catch (e) {
-    console.log(
-      `[VISIT ${rid}] thirdparty search(name like) ERROR:`,
-      e?.response?.status,
-      JSON.stringify(e?.response?.data || e.message)
-    );
-    if (e?.response?.status === 404) return null;
+    if (e?.response?.status !== 404) {
+      console.log(
+        `[VISIT ${rid}] thirdparty search(name like) ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+    }
   }
 
   const limit = 50;
@@ -310,8 +300,8 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     }
   }
 
-  const MIN = 250;
-  const GAP = 120;
+  const MIN = 260;
+  const GAP = 140;
   if (bestScore >= MIN && bestScore - secondBest >= GAP) return best;
 
   return null;
@@ -326,37 +316,16 @@ async function findUserByLogin(login, rid) {
     const list = asArray(res.data);
     const exact = list.find((u) => normLogin(u?.login) === target);
     if (exact) return exact;
+    return null;
   } catch (e) {
+    if (e?.response?.status === 404) return null;
+
     console.log(
       `[VISIT ${rid}] user search(sql) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    if (e?.response?.status === 404) return null;
-  }
-
-  const limit = 50;
-  let page = 0;
-
-  while (true) {
-    try {
-      const res = await apiClient.get(endpoints.usersEndpoint, { params: { limit, page } });
-      const list = asArray(res.data);
-      if (!list.length) return null;
-
-      const found = list.find((u) => normLogin(u?.login) === target);
-      if (found) return found;
-
-      page++;
-      if (page > 300) return null;
-    } catch (e) {
-      console.log(
-        `[VISIT ${rid}] user paging ERROR:`,
-        e?.response?.status,
-        JSON.stringify(e?.response?.data || e.message)
-      );
-      return null;
-    }
+    return null;
   }
 }
 
@@ -471,7 +440,6 @@ export async function crearVisita(req, res) {
     if (terceroModo === "SIN_CLIENTE") {
       try {
         const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
-
         if (to) {
           await sendNoClientEmail(to, {
             userLogin: user.login,
