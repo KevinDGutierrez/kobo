@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import axios from "axios";
 import { apiClient, endpoints } from "../service/api.js";
+import { sendNoClientEmail, getEmailForSubmitter } from "../service/email-sender.js";
 
 const DEBUG = process.env.DEBUG_VISIT === "1";
 const RAW_LOG_MAX = 800;
@@ -185,11 +186,10 @@ async function findThirdpartyByRef(ref, rid) {
         e?.response?.status,
         JSON.stringify(e?.response?.data || e.message)
       );
-      return null; 
+      return null;
     }
   }
 }
-
 
 function normText(s) {
   return String(s ?? "")
@@ -220,7 +220,7 @@ function scoreByQuery(candidateNameRaw, queryRaw) {
 
   for (const tk of qTokens) {
     if (cTokens.has(tk)) score += 120;
-    else score -= 250; 
+    else score -= 250;
   }
 
   if (qTokens.length && qTokens.every((t) => cTokens.has(t))) score += 200;
@@ -306,7 +306,7 @@ async function findThirdpartyByNameSmart(nombre, rid) {
         e?.response?.status,
         JSON.stringify(e?.response?.data || e.message)
       );
-      return null; 
+      return null;
     }
   }
 
@@ -462,6 +462,25 @@ export async function crearVisita(req, res) {
     if (tercero?.id) payload.socid = Number(tercero.id);
 
     const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
+
+    // ✅ Si NO se encontró cliente, notificar por correo al usuario que envió el form
+    if (terceroModo === "SIN_CLIENTE") {
+      try {
+        const to = await getEmailForSubmitter({ body, user, rid, apiClient, endpoints, firstNonEmpty });
+        if (to) {
+          await sendNoClientEmail(to, {
+            userLogin: user.login,
+            eventId: created.data,
+            nombreCliente,
+            thirdpartyRef,
+          });
+        } else {
+          console.log(`[VISIT ${rid}] SIN_CLIENTE pero no hay email para notificar`);
+        }
+      } catch (e) {
+        console.log(`[VISIT ${rid}] sendNoClientEmail ERROR:`, e?.message || String(e));
+      }
+    }
 
     return res.status(200).json({
       status: "VISITA CREADA",
