@@ -156,8 +156,7 @@ async function findThirdpartyByRef(ref, rid) {
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-    if (exact) return exact;
-    return null;
+    return exact || null;
   } catch (e) {
     if (e?.response?.status === 404) return null;
 
@@ -225,7 +224,7 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     const scored = list
       .map((t) => {
         const n = String(t?.nom ?? t?.name ?? "").trim();
-        return { t, name: n, score: scoreByQuery(n, query) };
+        return { t, score: scoreByQuery(n, query) };
       })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score);
@@ -244,65 +243,46 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     return best.t;
   }
 
+  const like = `%${query}%`;
+
   try {
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(
-      query
+      like
     )})`;
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const best = pickBest(list);
     if (best) return best;
-    return null;
   } catch (e) {
-    if (e?.response?.status !== 404) {
-      console.log(
-        `[VISIT ${rid}] thirdparty search(name like) ERROR:`,
-        e?.response?.status,
-        JSON.stringify(e?.response?.data || e.message)
-      );
-    }
+    console.log(
+      `[VISIT ${rid}] thirdparty search(name like t.nom) ERROR:`,
+      e?.response?.status,
+      JSON.stringify(e?.response?.data || e.message)
+    );
+    return null;
   }
 
-  const limit = 50;
-  let page = 0;
-
-  let best = null;
-  let bestScore = 0;
-  let secondBest = 0;
-
-  while (true) {
-    try {
-      const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
-      const list = asArray(res.data);
-      if (!list.length) break;
-
-      for (const t of list) {
-        const n = String(t?.nom ?? t?.name ?? "").trim();
-        const s = scoreByQuery(n, query);
-        if (s > bestScore) {
-          secondBest = bestScore;
-          bestScore = s;
-          best = t;
-        } else if (s > secondBest) {
-          secondBest = s;
-        }
-      }
-
-      page++;
-      if (page > 300) break;
-    } catch (e) {
-      console.log(
-        `[VISIT ${rid}] thirdparty paging(name) ERROR:`,
-        e?.response?.status,
-        JSON.stringify(e?.response?.data || e.message)
-      );
-      return null;
-    }
+  try {
+    const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.name:like:${encodeURIComponent(
+      like
+    )})`;
+    const res = await apiClient.get(url);
+    const list = asArray(res.data);
+    const best = pickBest(list);
+    if (best) return best;
+  } catch {
   }
 
-  const MIN = 260;
-  const GAP = 140;
-  if (bestScore >= MIN && bestScore - secondBest >= GAP) return best;
+  try {
+    const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.ref:like:${encodeURIComponent(
+      like
+    )})`;
+    const res = await apiClient.get(url);
+    const list = asArray(res.data);
+    const best = pickBest(list);
+    if (best) return best;
+  } catch {
+  }
 
   return null;
 }
@@ -315,8 +295,7 @@ async function findUserByLogin(login, rid) {
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((u) => normLogin(u?.login) === target);
-    if (exact) return exact;
-    return null;
+    return exact || null;
   } catch (e) {
     if (e?.response?.status === 404) return null;
 
@@ -389,7 +368,9 @@ export async function crearVisita(req, res) {
     if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
     const user = await findUserByLogin(asesorLogin, rid);
-    if (!user) return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
+    if (!user) {
+      return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
+    }
 
     let tercero = null;
     let terceroModo = "SIN_CLIENTE";
@@ -440,6 +421,7 @@ export async function crearVisita(req, res) {
     if (terceroModo === "SIN_CLIENTE") {
       try {
         const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
+
         if (to) {
           await sendNoClientEmail(to, {
             userLogin: user.login,
