@@ -156,16 +156,38 @@ async function findThirdpartyByRef(ref, rid) {
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-    return exact || null;
+    if (exact) return exact;
   } catch (e) {
-    if (e?.response?.status === 404) return null;
-
     console.log(
       `[VISIT ${rid}] thirdparty search(ref sql) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    return null;
+    if (e?.response?.status === 404) return null;
+  }
+
+  const limit = 50;
+  let page = 0;
+
+  while (true) {
+    try {
+      const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
+      const list = asArray(res.data);
+      if (!list.length) return null;
+
+      const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
+      if (found) return found;
+
+      page++;
+      if (page > 300) return null;
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] thirdparty paging(ref) ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return null;
+    }
   }
 }
 
@@ -183,35 +205,25 @@ function splitTokens(s) {
   return t ? t.split(" ").filter(Boolean) : [];
 }
 
-function compact(s) {
-  return normText(s).replace(/\s+/g, "");
-}
-
 function scoreByQuery(candidateNameRaw, queryRaw) {
   const cand = normText(candidateNameRaw);
   const q = normText(queryRaw);
   if (!cand || !q) return 0;
-
-  const candCompact = compact(cand);
-  const qCompact = compact(q);
 
   const qTokens = splitTokens(q);
   const cTokens = new Set(splitTokens(cand));
 
   let score = 0;
 
-  if (cand.includes(q)) score += 600;
-  if (cand.startsWith(q)) score += 250;
-
-  if (candCompact.includes(qCompact)) score += 500;
-  if (candCompact.startsWith(qCompact)) score += 200;
+  if (cand.includes(q)) score += 500;
+  if (cand.startsWith(q)) score += 200;
 
   for (const tk of qTokens) {
-    if (cTokens.has(tk)) score += 130;
-    else score -= 260;
+    if (cTokens.has(tk)) score += 120;
+    else score -= 250;
   }
 
-  if (qTokens.length && qTokens.every((t) => cTokens.has(t))) score += 220;
+  if (qTokens.length && qTokens.every((t) => cTokens.has(t))) score += 200;
 
   return score;
 }
@@ -224,7 +236,7 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     const scored = list
       .map((t) => {
         const n = String(t?.nom ?? t?.name ?? "").trim();
-        return { t, score: scoreByQuery(n, query) };
+        return { t, name: n, score: scoreByQuery(n, query) };
       })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score);
@@ -234,8 +246,8 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     const best = scored[0];
     const second = scored[1];
 
-    const MIN = 260;
-    const GAP = 140;
+    const MIN = 250;
+    const GAP = 120;
 
     if (best.score < MIN) return null;
     if (second && best.score - second.score < GAP) return null;
@@ -243,9 +255,8 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     return best.t;
   }
 
-  const like = `%${query}%`;
-
   try {
+    const like = `%${query}%`;
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(
       like
     )})`;
@@ -255,34 +266,53 @@ async function findThirdpartyByNameSmart(nombre, rid) {
     if (best) return best;
   } catch (e) {
     console.log(
-      `[VISIT ${rid}] thirdparty search(name like t.nom) ERROR:`,
+      `[VISIT ${rid}] thirdparty search(name like) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    return null;
+    if (e?.response?.status === 404) return null;
   }
 
-  try {
-    const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.name:like:${encodeURIComponent(
-      like
-    )})`;
-    const res = await apiClient.get(url);
-    const list = asArray(res.data);
-    const best = pickBest(list);
-    if (best) return best;
-  } catch {
+  const limit = 50;
+  let page = 0;
+
+  let best = null;
+  let bestScore = 0;
+  let secondBest = 0;
+
+  while (true) {
+    try {
+      const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
+      const list = asArray(res.data);
+      if (!list.length) break;
+
+      for (const t of list) {
+        const n = String(t?.nom ?? t?.name ?? "").trim();
+        const s = scoreByQuery(n, query);
+        if (s > bestScore) {
+          secondBest = bestScore;
+          bestScore = s;
+          best = t;
+        } else if (s > secondBest) {
+          secondBest = s;
+        }
+      }
+
+      page++;
+      if (page > 300) break;
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] thirdparty paging(name) ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return null;
+    }
   }
 
-  try {
-    const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.ref:like:${encodeURIComponent(
-      like
-    )})`;
-    const res = await apiClient.get(url);
-    const list = asArray(res.data);
-    const best = pickBest(list);
-    if (best) return best;
-  } catch {
-  }
+  const MIN = 250;
+  const GAP = 120;
+  if (bestScore >= MIN && bestScore - secondBest >= GAP) return best;
 
   return null;
 }
@@ -295,16 +325,38 @@ async function findUserByLogin(login, rid) {
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((u) => normLogin(u?.login) === target);
-    return exact || null;
+    if (exact) return exact;
   } catch (e) {
-    if (e?.response?.status === 404) return null;
-
     console.log(
       `[VISIT ${rid}] user search(sql) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    return null;
+    if (e?.response?.status === 404) return null;
+  }
+
+  const limit = 50;
+  let page = 0;
+
+  while (true) {
+    try {
+      const res = await apiClient.get(endpoints.usersEndpoint, { params: { limit, page } });
+      const list = asArray(res.data);
+      if (!list.length) return null;
+
+      const found = list.find((u) => normLogin(u?.login) === target);
+      if (found) return found;
+
+      page++;
+      if (page > 300) return null;
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] user paging ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return null;
+    }
   }
 }
 
@@ -358,19 +410,12 @@ export async function crearVisita(req, res) {
       firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion"]) ||
       "";
 
-    const ubicacionRaw = firstNonEmpty(body, [
-      "ubicacion_gps",
-      "gps_inicio",
-      "ubicacion",
-      "_geolocation",
-    ]);
+    const ubicacionRaw = firstNonEmpty(body, ["ubicacion_gps", "gps_inicio", "ubicacion", "_geolocation"]);
 
     if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
     const user = await findUserByLogin(asesorLogin, rid);
-    if (!user) {
-      return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
-    }
+    if (!user) return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
 
     let tercero = null;
     let terceroModo = "SIN_CLIENTE";
@@ -418,6 +463,7 @@ export async function crearVisita(req, res) {
 
     const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
 
+    // ✅ SOLO AGREGADO: correo cuando no hay cliente asociado
     if (terceroModo === "SIN_CLIENTE") {
       try {
         const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
