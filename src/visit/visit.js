@@ -410,7 +410,12 @@ export async function crearVisita(req, res) {
       firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion"]) ||
       "";
 
-    const ubicacionRaw = firstNonEmpty(body, ["ubicacion_gps", "gps_inicio", "ubicacion", "_geolocation"]);
+    const ubicacionRaw = firstNonEmpty(body, [
+      "ubicacion_gps",
+      "gps_inicio",
+      "ubicacion",
+      "_geolocation",
+    ]);
 
     if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
@@ -463,10 +468,10 @@ export async function crearVisita(req, res) {
 
     const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
 
-    // ✅ Si NO se encontró cliente, notificar por correo al usuario que envió el form
     if (terceroModo === "SIN_CLIENTE") {
       try {
-        const to = await getEmailForSubmitter({ body, user, rid, apiClient, endpoints, firstNonEmpty });
+        const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
+
         if (to) {
           await sendNoClientEmail(to, {
             userLogin: user.login,

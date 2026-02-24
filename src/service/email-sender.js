@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { apiClient, endpoints } from "./api.js";
 
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
@@ -19,7 +20,7 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
-export async function buildNoClientHtml({ userLogin, eventId, nombreCliente, thirdpartyRef }) {
+export function buildNoClientHtml({ userLogin, eventId, nombreCliente, thirdpartyRef }) {
   const nc = escapeHtml(nombreCliente || "N/D");
   const ref = escapeHtml(thirdpartyRef || "N/D");
   const ev = escapeHtml(eventId);
@@ -51,6 +52,35 @@ export async function buildNoClientHtml({ userLogin, eventId, nombreCliente, thi
       </p>
     </div>
   `;
+}
+
+export async function getEmailForSubmitter({ body, user, rid, firstNonEmpty }) {
+  const fromKobo = firstNonEmpty(body, [
+    "lx_user/email",
+    "lx_user.email",
+    "lx_user->email",
+    "lx_user_email",
+    "user/email",
+    "user.email",
+    "email",
+    "correo",
+  ]);
+  if (fromKobo) return String(fromKobo).trim();
+
+  if (user?.email) return String(user.email).trim();
+
+  try {
+    const r = await apiClient.get(`${endpoints.usersEndpoint}/${user.id}`);
+    const email = r?.data?.email || r?.data?.mail || null;
+    return email ? String(email).trim() : null;
+  } catch (e) {
+    console.log(
+      `[VISIT ${rid}] getEmailForSubmitter ERROR:`,
+      e?.response?.status,
+      JSON.stringify(e?.response?.data || e.message)
+    );
+    return null;
+  }
 }
 
 export async function sendNoClientEmail(to, { userLogin, eventId, nombreCliente, thirdpartyRef }) {
