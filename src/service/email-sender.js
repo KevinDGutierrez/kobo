@@ -19,7 +19,7 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
-function buildNoClientHtml({ userLogin, eventId, nombreCliente, thirdpartyRef }) {
+export async function buildNoClientHtml({ userLogin, eventId, nombreCliente, thirdpartyRef }) {
   const nc = escapeHtml(nombreCliente || "N/D");
   const ref = escapeHtml(thirdpartyRef || "N/D");
   const ev = escapeHtml(eventId);
@@ -53,7 +53,7 @@ function buildNoClientHtml({ userLogin, eventId, nombreCliente, thirdpartyRef })
   `;
 }
 
-async function sendNoClientEmail(to, { userLogin, eventId, nombreCliente, thirdpartyRef }) {
+export async function sendNoClientEmail(to, { userLogin, eventId, nombreCliente, thirdpartyRef }) {
   if (!to) return;
 
   const mailOptions = {
