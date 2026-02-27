@@ -366,9 +366,7 @@ function parseYesNo(v) {
 }
 
 function normalizePhone(p) {
-  return String(p ?? "")
-    .replace(/[^\d+]/g, "")
-    .trim();
+  return String(p ?? "").replace(/[^\d+]/g, "").trim();
 }
 
 function normEmail(e) {
@@ -382,16 +380,13 @@ async function listContactsBySocid(socid, rid) {
 
   while (true) {
     try {
-      const url = `${endpoints.contactsEndpoint}?sqlfilters=(fk_soc:=:${encodeURIComponent(
-        String(socid)
-      )})`;
+      const url = `${endpoints.contactsEndpoint}?sqlfilters=(fk_soc:=:${socid})`;
       const res = await apiClient.get(url, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) break;
       all.push(...list);
 
       if (list.length < limit) break;
-
       page++;
       if (page > 50) break;
     } catch (e) {
@@ -429,6 +424,7 @@ function contactMatches(existing, desired) {
 
 async function ensureContactIfRequested({ body, tercero, rid }) {
   if (!tercero?.id) return { done: false, reason: "NO_TERCERO" };
+  if (!endpoints?.contactsEndpoint) return { done: true, created: false, reason: "SIN_ENDPOINT_CONTACTS" };
 
   const wants = firstNonEmpty(body, [
     "contacto_cliente_00",
@@ -436,6 +432,8 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "dolibarr.contacto_cliente_00",
     "datos_visita/contacto_cliente_00",
     "datos_visita.contacto_cliente_00",
+    "datos_para_dolibarr/contacto_cliente_00",
+    "datos_para_dolibarr.contacto_cliente_00",
   ]);
 
   if (!parseYesNo(wants)) return { done: false, reason: "NO_SOLICITADO" };
@@ -480,19 +478,26 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
 
   if (!hasSomething) return { done: false, reason: "SIN_DATOS_CONTACTO" };
 
-  const contacts = await listContactsBySocid(Number(tercero.id), rid);
-  const desired = { firstname, lastname, phone, email };
+  const socid = Number(tercero.id);
+  const desired = {
+    firstname: String(firstname ?? "").trim(),
+    lastname: String(lastname ?? "").trim(),
+    phone: String(phone ?? "").trim(),
+    email: String(email ?? "").trim(),
+  };
+
+  const contacts = await listContactsBySocid(socid, rid);
   const exists = contacts.some((c) => contactMatches(c, desired));
   if (exists) return { done: true, created: false, reason: "YA_EXISTE" };
 
   try {
     const payload = {
-      socid: Number(tercero.id),
-      fk_soc: Number(tercero.id),
-      firstname: String(firstname ?? "").trim(),
-      lastname: String(lastname ?? "").trim(),
-      phone: String(phone ?? "").trim(),
-      email: String(email ?? "").trim(),
+      fk_soc: socid,
+      socid: socid,
+      firstname: desired.firstname,
+      lastname: desired.lastname || "N/D",
+      phone: desired.phone,
+      email: desired.email,
     };
 
     const r = await apiClient.post(endpoints.contactsEndpoint, payload);
@@ -524,6 +529,15 @@ export async function crearVisita(req, res) {
       "datos_visita/tercero_ref",
       "datos_visita.thirdparty_ref",
       "datos_visita.tercero_ref",
+
+      "codigo_cliente",
+      "codigo_del_cliente",
+      "code_client",
+      "cliente_codigo",
+      "datos_para_dolibarr/codigo_cliente",
+      "datos_para_dolibarr.codigo_cliente",
+      "dolibarr/codigo_cliente",
+      "dolibarr.codigo_cliente",
     ]);
 
     const nombreCliente = firstNonEmpty(body, [
@@ -557,7 +571,12 @@ export async function crearVisita(req, res) {
       firstNonEmpty(body, ["note", "descripcion", "dolibarr/descripcion", "dolibarr.descripcion"]) ||
       "";
 
-    const ubicacionRaw = firstNonEmpty(body, ["ubicacion_gps", "gps_inicio", "ubicacion", "_geolocation"]);
+    const ubicacionRaw = firstNonEmpty(body, [
+      "ubicacion_gps",
+      "gps_inicio",
+      "ubicacion",
+      "_geolocation",
+    ]);
 
     if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
@@ -615,6 +634,7 @@ export async function crearVisita(req, res) {
     if (terceroModo === "SIN_CLIENTE") {
       try {
         const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
+
         if (to) {
           await sendNoClientEmail(to, {
             userLogin: user.login,
