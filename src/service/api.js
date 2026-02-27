@@ -29,4 +29,5 @@ export const endpoints = {
   usersEndpoint: "/users",
   ticketsEndpoint: "/tickets",
   agendaEventsEndpoint: "/agendaevents",
+  contactsEndpoint: "/contacts",
 };

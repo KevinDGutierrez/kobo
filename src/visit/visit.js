@@ -360,6 +360,153 @@ async function findUserByLogin(login, rid) {
   }
 }
 
+function parseYesNo(v) {
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "si" || s === "sí" || s === "yes" || s === "true" || s === "1";
+}
+
+function normalizePhone(p) {
+  return String(p ?? "")
+    .replace(/[^\d+]/g, "")
+    .trim();
+}
+
+function normEmail(e) {
+  return String(e ?? "").trim().toLowerCase();
+}
+
+async function listContactsBySocid(socid, rid) {
+  const limit = 100;
+  let page = 0;
+  const all = [];
+
+  while (true) {
+    try {
+      const url = `${endpoints.contactsEndpoint}?sqlfilters=(fk_soc:=:${encodeURIComponent(
+        String(socid)
+      )})`;
+      const res = await apiClient.get(url, { params: { limit, page } });
+      const list = asArray(res.data);
+      if (!list.length) break;
+      all.push(...list);
+
+      if (list.length < limit) break;
+
+      page++;
+      if (page > 50) break;
+    } catch (e) {
+      if (e?.response?.status === 404) return [];
+      console.log(
+        `[VISIT ${rid}] contacts list ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return [];
+    }
+  }
+
+  return all;
+}
+
+function contactMatches(existing, desired) {
+  const exEmail = normEmail(existing?.email);
+  const exPhone = normalizePhone(existing?.phone);
+  const exFirst = normText(existing?.firstname);
+  const exLast = normText(existing?.lastname);
+
+  const dEmail = normEmail(desired?.email);
+  const dPhone = normalizePhone(desired?.phone);
+  const dFirst = normText(desired?.firstname);
+  const dLast = normText(desired?.lastname);
+
+  if (dEmail && exEmail && dEmail === exEmail) return true;
+  if (dPhone && exPhone && dPhone === exPhone) return true;
+
+  if (dFirst && dLast && exFirst === dFirst && exLast === dLast) return true;
+
+  return false;
+}
+
+async function ensureContactIfRequested({ body, tercero, rid }) {
+  if (!tercero?.id) return { done: false, reason: "NO_TERCERO" };
+
+  const wants = firstNonEmpty(body, [
+    "contacto_cliente_00",
+    "dolibarr/contacto_cliente_00",
+    "dolibarr.contacto_cliente_00",
+    "datos_visita/contacto_cliente_00",
+    "datos_visita.contacto_cliente_00",
+  ]);
+
+  if (!parseYesNo(wants)) return { done: false, reason: "NO_SOLICITADO" };
+
+  const firstname = firstNonEmpty(body, [
+    "nombre_contacto",
+    "datos_persona/nombre_contacto",
+    "datos_persona.nombre_contacto",
+    "dolibarr/nombre_contacto",
+    "dolibarr.nombre_contacto",
+  ]);
+
+  const lastname = firstNonEmpty(body, [
+    "apellido_contacto",
+    "datos_persona/apellido_contacto",
+    "datos_persona.apellido_contacto",
+    "dolibarr/apellido_contacto",
+    "dolibarr.apellido_contacto",
+  ]);
+
+  const phone = firstNonEmpty(body, [
+    "numero_contacto",
+    "datos_persona/numero_contacto",
+    "datos_persona.numero_contacto",
+    "dolibarr/numero_contacto",
+    "dolibarr.numero_contacto",
+  ]);
+
+  const email = firstNonEmpty(body, [
+    "correo_contacto",
+    "datos_persona/correo_contacto",
+    "datos_persona.correo_contacto",
+    "dolibarr/correo_contacto",
+    "dolibarr.correo_contacto",
+  ]);
+
+  const hasSomething =
+    String(firstname ?? "").trim() ||
+    String(lastname ?? "").trim() ||
+    String(phone ?? "").trim() ||
+    String(email ?? "").trim();
+
+  if (!hasSomething) return { done: false, reason: "SIN_DATOS_CONTACTO" };
+
+  const contacts = await listContactsBySocid(Number(tercero.id), rid);
+  const desired = { firstname, lastname, phone, email };
+  const exists = contacts.some((c) => contactMatches(c, desired));
+  if (exists) return { done: true, created: false, reason: "YA_EXISTE" };
+
+  try {
+    const payload = {
+      socid: Number(tercero.id),
+      fk_soc: Number(tercero.id),
+      firstname: String(firstname ?? "").trim(),
+      lastname: String(lastname ?? "").trim(),
+      phone: String(phone ?? "").trim(),
+      email: String(email ?? "").trim(),
+    };
+
+    const r = await apiClient.post(endpoints.contactsEndpoint, payload);
+    return { done: true, created: true, contactId: r?.data ?? null };
+  } catch (e) {
+    console.log(
+      `[VISIT ${rid}] create contact ERROR:`,
+      e?.response?.status,
+      JSON.stringify(e?.response?.data || e.message)
+    );
+    return { done: true, created: false, reason: "ERROR_CREANDO" };
+  }
+}
+
 export async function crearVisita(req, res) {
   const rid = crypto.randomUUID();
 
@@ -428,6 +575,8 @@ export async function crearVisita(req, res) {
       if (tercero) terceroModo = "ASOCIADO_POR_NOMBRE_PARCIAL";
     }
 
+    const contactResult = await ensureContactIfRequested({ body, tercero, rid });
+
     let locationText = firstNonEmpty(body, [
       "ubicacion_texto",
       "ubicacion_direccion",
@@ -463,11 +612,9 @@ export async function crearVisita(req, res) {
 
     const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
 
-    // ✅ SOLO AGREGADO: correo cuando no hay cliente asociado
     if (terceroModo === "SIN_CLIENTE") {
       try {
         const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
-
         if (to) {
           await sendNoClientEmail(to, {
             userLogin: user.login,
@@ -495,6 +642,7 @@ export async function crearVisita(req, res) {
       userId: user.id,
       userLogin: user.login,
       location: payload.location,
+      contact: contactResult,
     });
   } catch (error) {
     const status = error?.response?.status;
