@@ -354,12 +354,7 @@ async function findThirdpartyByNameSmart(nombre, rid) {
   const MIN = 250;
   const GAP = 120;
   const ok = bestScore >= MIN && bestScore - secondBest >= GAP;
-  logRid(rid, "thirdparty paging(name) best", {
-    ok,
-    bestScore,
-    secondBest,
-    bestId: best?.id ?? null,
-  });
+  logRid(rid, "thirdparty paging(name) best", { ok, bestScore, secondBest, bestId: best?.id ?? null });
 
   if (ok) return best;
   return null;
@@ -376,11 +371,7 @@ async function findUserByLogin(login, rid) {
     const list = asArray(res.data);
     const exact = list.find((u) => normLogin(u?.login) === target);
 
-    logRid(rid, "user search(sql) result", {
-      rows: list.length,
-      found: Boolean(exact),
-      userId: exact?.id ?? null,
-    });
+    logRid(rid, "user search(sql) result", { rows: list.length, found: Boolean(exact), userId: exact?.id ?? null });
 
     if (exact) return exact;
   } catch (e) {
@@ -438,57 +429,22 @@ async function listContactsBySocid(socid, rid) {
 
   try {
     const url = `${endpoints.contactsEndpoint}?sqlfilters=(fk_soc:=:${socid})`;
-    logRid(rid, "contacts list (by socid) ->", { url });
+    logRid(rid, "contacts list ->", { url });
 
     const res = await apiClient.get(url);
     const list = asArray(res.data);
-    logRid(rid, "contacts list (by socid) result", { rows: list.length });
+    logRid(rid, "contacts list result", { rows: list.length });
 
     return list;
   } catch (e) {
     if (e?.response?.status === 404) return [];
     console.log(
-      `[VISIT ${rid}] contacts list (by socid) ERROR:`,
+      `[VISIT ${rid}] contacts list ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
     return [];
   }
-}
-
-async function listContactsGlobal(rid) {
-  if (!endpoints?.contactsEndpoint) return [];
-
-  const limit = 100;
-  let page = 0;
-  const all = [];
-
-  while (true) {
-    try {
-      logRid(rid, "contacts list (global) page", { page, limit });
-
-      const res = await apiClient.get(endpoints.contactsEndpoint, { params: { limit, page } });
-      const list = asArray(res.data);
-
-      if (!list.length) break;
-      all.push(...list);
-
-      if (list.length < limit) break;
-      page++;
-      if (page > 50) break;
-    } catch (e) {
-      if (e?.response?.status === 404) return [];
-      console.log(
-        `[VISIT ${rid}] contacts list (global) ERROR:`,
-        e?.response?.status,
-        JSON.stringify(e?.response?.data || e.message)
-      );
-      return all;
-    }
-  }
-
-  logRid(rid, "contacts list (global) done", { rows: all.length });
-  return all;
 }
 
 function contactMatches(existing, desired) {
@@ -532,7 +488,7 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     return { done: false, reason: "NO_SOLICITADO" };
   }
 
-  const firstname = firstNonEmpty(body, [
+  const firstnameRaw = firstNonEmpty(body, [
     "nombre_contacto",
     "datos_persona/nombre_contacto",
     "datos_persona.nombre_contacto",
@@ -540,7 +496,7 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "dolibarr.nombre_contacto",
   ]);
 
-  const lastname = firstNonEmpty(body, [
+  const lastnameRaw = firstNonEmpty(body, [
     "apellido_contacto",
     "datos_persona/apellido_contacto",
     "datos_persona.apellido_contacto",
@@ -548,7 +504,7 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "dolibarr.apellido_contacto",
   ]);
 
-  const phone = firstNonEmpty(body, [
+  const phoneRaw = firstNonEmpty(body, [
     "numero_contacto",
     "datos_persona/numero_contacto",
     "datos_persona.numero_contacto",
@@ -556,7 +512,7 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "dolibarr.numero_contacto",
   ]);
 
-  const email = firstNonEmpty(body, [
+  const emailRaw = firstNonEmpty(body, [
     "correo_contacto",
     "datos_persona/correo_contacto",
     "datos_persona.correo_contacto",
@@ -564,69 +520,82 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "dolibarr.correo_contacto",
   ]);
 
+  const firstname = String(firstnameRaw ?? "").trim();
+  const lastname = String(lastnameRaw ?? "").trim();
+  const phone = String(phoneRaw ?? "").trim();
+  const email = String(emailRaw ?? "").trim();
+
   logRid(rid, "contact fields", { firstname, lastname, phone, email });
 
-  const hasSomething =
-    String(firstname ?? "").trim() ||
-    String(lastname ?? "").trim() ||
-    String(phone ?? "").trim() ||
-    String(email ?? "").trim();
-
+  const hasSomething = firstname || lastname || phone || email;
   if (!hasSomething) {
     logRid(rid, "contact skip", { reason: "SIN_DATOS_CONTACTO" });
     return { done: false, reason: "SIN_DATOS_CONTACTO" };
   }
 
   const desired = {
-    firstname: String(firstname ?? "").trim(),
-    lastname: String(lastname ?? "").trim(),
-    phone: String(phone ?? "").trim(),
-    email: String(email ?? "").trim(),
+    firstname: firstname || "N/D",
+    lastname: lastname || "N/D",
+    phone,
+    email,
   };
 
-  let exists = false;
-  let scope = "GLOBAL";
-
   if (tercero?.id) {
-    scope = `SOCID:${tercero.id}`;
-    const existing = await listContactsBySocid(Number(tercero.id), rid);
-    exists = existing.some((c) => contactMatches(c, desired));
-  } else {
-    const existing = await listContactsGlobal(rid);
-    exists = existing.some((c) => contactMatches(c, desired));
-  }
+    const socid = Number(tercero.id);
+    const existing = await listContactsBySocid(socid, rid);
+    const exists = existing.some((c) => contactMatches(c, desired));
+    if (exists) {
+      logRid(rid, "contact exists", { socid, reason: "YA_EXISTE" });
+      return { done: true, created: false, reason: "YA_EXISTE" };
+    }
 
-  if (exists) {
-    logRid(rid, "contact exists", { scope, reason: "YA_EXISTE" });
-    return { done: true, created: false, reason: "YA_EXISTE", scope };
+    try {
+      const payload = {
+        fk_soc: socid,
+        socid,
+        firstname: desired.firstname,
+        lastname: desired.lastname,
+        phone: desired.phone,
+        email: desired.email,
+      };
+
+      logRid(rid, "contact create payload", payload);
+
+      const r = await apiClient.post(endpoints.contactsEndpoint, payload);
+      logRid(rid, "contact created", { contactId: r?.data ?? null });
+
+      return { done: true, created: true, contactId: r?.data ?? null };
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] create contact ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      return { done: true, created: false, reason: "ERROR_CREANDO" };
+    }
   }
 
   try {
     const payload = {
       firstname: desired.firstname,
-      lastname: desired.lastname || "N/D",
+      lastname: desired.lastname,
       phone: desired.phone,
       email: desired.email,
     };
 
-    if (tercero?.id) {
-      payload.fk_soc = Number(tercero.id);
-      payload.socid = Number(tercero.id);
-    }
-
-    logRid(rid, "contact create payload", { scope, payload });
+    logRid(rid, "contact create payload (SIN_CLIENTE)", payload);
 
     const r = await apiClient.post(endpoints.contactsEndpoint, payload);
-    logRid(rid, "contact created", { scope, contactId: r?.data ?? null });
+    logRid(rid, "contact created (SIN_CLIENTE)", { contactId: r?.data ?? null });
 
-    return { done: true, created: true, contactId: r?.data ?? null, scope };
+    return { done: true, created: true, contactId: r?.data ?? null, reason: "CREADO_SIN_CLIENTE" };
   } catch (e) {
     console.log(
-      `[VISIT ${rid}] create contact ERROR:`,
+      `[VISIT ${rid}] create contact (SIN_CLIENTE) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    return { done: true, created: false, reason: "ERROR_CREANDO" };
+    return { done: true, created: false, reason: "ERROR_CREANDO_SIN_CLIENTE" };
   }
 }
 
@@ -722,7 +691,6 @@ export async function crearVisita(req, res) {
     });
 
     const contactResult = await ensureContactIfRequested({ body, tercero, rid });
-    logRid(rid, "contact result", contactResult);
 
     let locationText = firstNonEmpty(body, [
       "ubicacion_texto",
