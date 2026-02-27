@@ -146,6 +146,16 @@ async function reverseGeocode(lat, lon) {
   return pretty || r?.data?.display_name || null;
 }
 
+function logRid(rid, msg, obj) {
+  if (!DEBUG) return;
+  try {
+    const safe = obj === undefined ? "" : ` ${JSON.stringify(obj).slice(0, RAW_LOG_MAX)}`;
+    console.log(`[VISIT ${rid}] ${msg}${safe}`);
+  } catch {
+    console.log(`[VISIT ${rid}] ${msg}`);
+  }
+}
+
 async function findThirdpartyByRef(ref, rid) {
   const target = norm(ref);
 
@@ -153,9 +163,20 @@ async function findThirdpartyByRef(ref, rid) {
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.code_client:=:${encodeURIComponent(
       target
     )})`;
+    logRid(rid, "thirdparty search(sql) ->", { url, target });
+
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
+
+    logRid(rid, "thirdparty search(sql) result", {
+      rows: list.length,
+      found: Boolean(exact),
+      foundId: exact?.id ?? null,
+      foundCode: exact?.code_client ?? null,
+      foundRef: exact?.ref ?? null,
+    });
+
     if (exact) return exact;
   } catch (e) {
     console.log(
@@ -171,12 +192,17 @@ async function findThirdpartyByRef(ref, rid) {
 
   while (true) {
     try {
+      logRid(rid, "thirdparty paging(ref) page", { page, limit });
+
       const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) return null;
 
       const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-      if (found) return found;
+      if (found) {
+        logRid(rid, "thirdparty paging(ref) FOUND", { id: found?.id, code_client: found?.code_client, ref: found?.ref });
+        return found;
+      }
 
       page++;
       if (page > 300) return null;
@@ -257,12 +283,15 @@ async function findThirdpartyByNameSmart(nombre, rid) {
 
   try {
     const like = `%${query}%`;
-    const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(
-      like
-    )})`;
+    const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(like)})`;
+    logRid(rid, "thirdparty search(name like) ->", { url });
+
     const res = await apiClient.get(url);
     const list = asArray(res.data);
+
     const best = pickBest(list);
+    logRid(rid, "thirdparty search(name like) result", { rows: list.length, found: Boolean(best), foundId: best?.id ?? null });
+
     if (best) return best;
   } catch (e) {
     console.log(
@@ -282,6 +311,8 @@ async function findThirdpartyByNameSmart(nombre, rid) {
 
   while (true) {
     try {
+      logRid(rid, "thirdparty paging(name) page", { page, limit });
+
       const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) break;
@@ -312,8 +343,10 @@ async function findThirdpartyByNameSmart(nombre, rid) {
 
   const MIN = 250;
   const GAP = 120;
-  if (bestScore >= MIN && bestScore - secondBest >= GAP) return best;
+  const ok = bestScore >= MIN && bestScore - secondBest >= GAP;
+  logRid(rid, "thirdparty paging(name) best", { ok, bestScore, secondBest, bestId: best?.id ?? null });
 
+  if (ok) return best;
   return null;
 }
 
@@ -322,9 +355,14 @@ async function findUserByLogin(login, rid) {
 
   try {
     const url = `${endpoints.usersEndpoint}?sqlfilters=(t.login:=:${encodeURIComponent(login)})`;
+    logRid(rid, "user search(sql) ->", { url, login });
+
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((u) => normLogin(u?.login) === target);
+
+    logRid(rid, "user search(sql) result", { rows: list.length, found: Boolean(exact), userId: exact?.id ?? null });
+
     if (exact) return exact;
   } catch (e) {
     console.log(
@@ -340,12 +378,17 @@ async function findUserByLogin(login, rid) {
 
   while (true) {
     try {
+      logRid(rid, "user paging page", { page, limit });
+
       const res = await apiClient.get(endpoints.usersEndpoint, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) return null;
 
       const found = list.find((u) => normLogin(u?.login) === target);
-      if (found) return found;
+      if (found) {
+        logRid(rid, "user paging FOUND", { id: found?.id, login: found?.login });
+        return found;
+      }
 
       page++;
       if (page > 300) return null;
@@ -364,43 +407,34 @@ function parseYesNo(v) {
   const s = String(v ?? "").trim().toLowerCase();
   return s === "si" || s === "sí" || s === "yes" || s === "true" || s === "1";
 }
-
 function normalizePhone(p) {
   return String(p ?? "").replace(/[^\d+]/g, "").trim();
 }
-
 function normEmail(e) {
   return String(e ?? "").trim().toLowerCase();
 }
 
 async function listContactsBySocid(socid, rid) {
-  const limit = 100;
-  let page = 0;
-  const all = [];
+  if (!endpoints?.contactsEndpoint) return [];
 
-  while (true) {
-    try {
-      const url = `${endpoints.contactsEndpoint}?sqlfilters=(fk_soc:=:${socid})`;
-      const res = await apiClient.get(url, { params: { limit, page } });
-      const list = asArray(res.data);
-      if (!list.length) break;
-      all.push(...list);
+  try {
+    const url = `${endpoints.contactsEndpoint}?sqlfilters=(fk_soc:=:${socid})`;
+    logRid(rid, "contacts list ->", { url });
 
-      if (list.length < limit) break;
-      page++;
-      if (page > 50) break;
-    } catch (e) {
-      if (e?.response?.status === 404) return [];
-      console.log(
-        `[VISIT ${rid}] contacts list ERROR:`,
-        e?.response?.status,
-        JSON.stringify(e?.response?.data || e.message)
-      );
-      return [];
-    }
+    const res = await apiClient.get(url);
+    const list = asArray(res.data);
+    logRid(rid, "contacts list result", { rows: list.length });
+
+    return list;
+  } catch (e) {
+    if (e?.response?.status === 404) return [];
+    console.log(
+      `[VISIT ${rid}] contacts list ERROR:`,
+      e?.response?.status,
+      JSON.stringify(e?.response?.data || e.message)
+    );
+    return [];
   }
-
-  return all;
 }
 
 function contactMatches(existing, desired) {
@@ -416,15 +450,20 @@ function contactMatches(existing, desired) {
 
   if (dEmail && exEmail && dEmail === exEmail) return true;
   if (dPhone && exPhone && dPhone === exPhone) return true;
-
   if (dFirst && dLast && exFirst === dFirst && exLast === dLast) return true;
 
   return false;
 }
 
 async function ensureContactIfRequested({ body, tercero, rid }) {
-  if (!tercero?.id) return { done: false, reason: "NO_TERCERO" };
-  if (!endpoints?.contactsEndpoint) return { done: true, created: false, reason: "SIN_ENDPOINT_CONTACTS" };
+  if (!tercero?.id) {
+    logRid(rid, "contact skip", { reason: "NO_TERCERO" });
+    return { done: false, reason: "NO_TERCERO" };
+  }
+  if (!endpoints?.contactsEndpoint) {
+    logRid(rid, "contact skip", { reason: "SIN_ENDPOINT_CONTACTS" });
+    return { done: true, created: false, reason: "SIN_ENDPOINT_CONTACTS" };
+  }
 
   const wants = firstNonEmpty(body, [
     "contacto_cliente_00",
@@ -436,7 +475,12 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "datos_para_dolibarr.contacto_cliente_00",
   ]);
 
-  if (!parseYesNo(wants)) return { done: false, reason: "NO_SOLICITADO" };
+  logRid(rid, "contact wants raw", { wants });
+
+  if (!parseYesNo(wants)) {
+    logRid(rid, "contact skip", { reason: "NO_SOLICITADO" });
+    return { done: false, reason: "NO_SOLICITADO" };
+  }
 
   const firstname = firstNonEmpty(body, [
     "nombre_contacto",
@@ -470,13 +514,18 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "dolibarr.correo_contacto",
   ]);
 
+  logRid(rid, "contact fields", { firstname, lastname, phone, email });
+
   const hasSomething =
     String(firstname ?? "").trim() ||
     String(lastname ?? "").trim() ||
     String(phone ?? "").trim() ||
     String(email ?? "").trim();
 
-  if (!hasSomething) return { done: false, reason: "SIN_DATOS_CONTACTO" };
+  if (!hasSomething) {
+    logRid(rid, "contact skip", { reason: "SIN_DATOS_CONTACTO" });
+    return { done: false, reason: "SIN_DATOS_CONTACTO" };
+  }
 
   const socid = Number(tercero.id);
   const desired = {
@@ -486,21 +535,28 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     email: String(email ?? "").trim(),
   };
 
-  const contacts = await listContactsBySocid(socid, rid);
-  const exists = contacts.some((c) => contactMatches(c, desired));
-  if (exists) return { done: true, created: false, reason: "YA_EXISTE" };
+  const existing = await listContactsBySocid(socid, rid);
+  const exists = existing.some((c) => contactMatches(c, desired));
+  if (exists) {
+    logRid(rid, "contact exists", { socid, reason: "YA_EXISTE" });
+    return { done: true, created: false, reason: "YA_EXISTE" };
+  }
 
   try {
     const payload = {
       fk_soc: socid,
-      socid: socid,
+      socid,
       firstname: desired.firstname,
       lastname: desired.lastname || "N/D",
       phone: desired.phone,
       email: desired.email,
     };
 
+    logRid(rid, "contact create payload", payload);
+
     const r = await apiClient.post(endpoints.contactsEndpoint, payload);
+    logRid(rid, "contact created", { contactId: r?.data ?? null });
+
     return { done: true, created: true, contactId: r?.data ?? null };
   } catch (e) {
     console.log(
@@ -529,15 +585,14 @@ export async function crearVisita(req, res) {
       "datos_visita/tercero_ref",
       "datos_visita.thirdparty_ref",
       "datos_visita.tercero_ref",
-
       "codigo_cliente",
       "codigo_del_cliente",
-      "code_client",
       "cliente_codigo",
-      "datos_para_dolibarr/codigo_cliente",
-      "datos_para_dolibarr.codigo_cliente",
+      "code_client",
       "dolibarr/codigo_cliente",
       "dolibarr.codigo_cliente",
+      "datos_para_dolibarr/codigo_cliente",
+      "datos_para_dolibarr.codigo_cliente",
     ]);
 
     const nombreCliente = firstNonEmpty(body, [
@@ -578,6 +633,13 @@ export async function crearVisita(req, res) {
       "_geolocation",
     ]);
 
+    logRid(rid, "IN keys", {
+      asesorLogin,
+      thirdpartyRef,
+      nombreCliente,
+      contacto_cliente_00: firstNonEmpty(body, ["contacto_cliente_00", "datos_visita/contacto_cliente_00"]),
+    });
+
     if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
 
     const user = await findUserByLogin(asesorLogin, rid);
@@ -593,6 +655,14 @@ export async function crearVisita(req, res) {
       tercero = await findThirdpartyByNameSmart(nombreCliente, rid);
       if (tercero) terceroModo = "ASOCIADO_POR_NOMBRE_PARCIAL";
     }
+
+    logRid(rid, "TERCERO result", {
+      terceroModo,
+      terceroId: tercero?.id ?? null,
+      terceroRef: tercero?.ref ?? null,
+      terceroCode: tercero?.code_client ?? null,
+      terceroNom: tercero?.nom ?? tercero?.name ?? null,
+    });
 
     const contactResult = await ensureContactIfRequested({ body, tercero, rid });
 
@@ -629,19 +699,24 @@ export async function crearVisita(req, res) {
 
     if (tercero?.id) payload.socid = Number(tercero.id);
 
+    logRid(rid, "agenda payload", payload);
+
     const created = await apiClient.post(endpoints.agendaEventsEndpoint, payload);
 
     if (terceroModo === "SIN_CLIENTE") {
       try {
         const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
 
+        logRid(rid, "email(to) resolve", { to });
+
         if (to) {
           await sendNoClientEmail(to, {
             userLogin: user.login,
             eventId: created.data,
             nombreCliente,
-            thirdpartyRef,
+            thirdpartyRef, 
           });
+          logRid(rid, "email SENT", { to, eventId: created.data });
         } else {
           console.log(`[VISIT ${rid}] SIN_CLIENTE pero no hay email para notificar`);
         }
