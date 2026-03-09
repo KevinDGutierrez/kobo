@@ -908,15 +908,18 @@ async function createOpportunityIfRequested({ body, tercero, note, rid, user }) 
       description: String(note ?? "").trim(),
       status: 1,
       usage_opportunity: 1,
-      dateo: nowUnix,
-      datee: nowUnix,
+      date_start: nowUnix,
     };
 
     if (tercero?.id) payload.socid = Number(tercero.id);
     if (fkOppStatus != null) payload.opp_status = fkOppStatus;
-    if (dateEndUnix) payload.datee = dateEndUnix;
-    if (oppAmount != null && String(oppAmount).trim() !== "") payload.opp_amount = String(oppAmount).trim();
-    if (budgetAmount != null && String(budgetAmount).trim() !== "") payload.budget_amount = String(budgetAmount).trim();
+    if (dateEndUnix) payload.date_end = dateEndUnix;
+    if (oppAmount != null && String(oppAmount).trim() !== "") {
+      payload.opp_amount = String(oppAmount).trim();
+    }
+    if (budgetAmount != null && String(budgetAmount).trim() !== "") {
+      payload.budget_amount = String(budgetAmount).trim();
+    }
     if (user?.id) payload.user_resp_id = Number(user.id);
 
     logRid(rid, "OPORTUNIDAD create payload", payload);
