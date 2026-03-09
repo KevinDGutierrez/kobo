@@ -30,4 +30,5 @@ export const endpoints = {
   ticketsEndpoint: "/tickets",
   agendaEventsEndpoint: "/agendaevents",
   contactsEndpoint: "/contacts",
+  projectsEndpoint: "/projects",
 };
