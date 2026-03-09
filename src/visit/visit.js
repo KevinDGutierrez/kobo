@@ -39,6 +39,11 @@ function parseYesNo(v) {
   return s === "si" || s === "sí" || s === "yes" || s === "true" || s === "1";
 }
 
+function isClienteNuevo(v) {
+  const s = normText(v);
+  return s === "nuevo" || s === "cliente nuevo" || s === "cliente_nuevo";
+}
+
 function normalizePhone(p) {
   return String(p ?? "").replace(/[^\d+]/g, "").trim();
 }
@@ -528,6 +533,8 @@ async function createThirdpartyIfNew({
 }) {
   logRid(rid, "CLIENTE_NUEVO flow start", {
     clienteTipo,
+    clienteTipoNormalizado: normText(clienteTipo),
+    entraClienteNuevo: isClienteNuevo(clienteTipo),
     nombreClienteNuevo,
     correoClienteNuevo,
     numeroClienteNuevo,
@@ -535,7 +542,7 @@ async function createThirdpartyIfNew({
     userId: user?.id ?? null,
   });
 
-  if (normText(clienteTipo) !== "cliente nuevo") {
+  if (!isClienteNuevo(clienteTipo)) {
     logRid(rid, "CLIENTE_NUEVO skip", { reason: "NO_ES_CLIENTE_NUEVO" });
     return { attempted: false, created: false, tercero: null, reason: "NO_ES_CLIENTE_NUEVO" };
   }
@@ -733,7 +740,7 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
       "datos_persona.apellido_contacto",
       "apellido_contacto",
       "dolibarr/apellido_contacto",
-      "dolibarr.nombre_contacto",
+      "dolibarr.apellido_contacto",
     ]) ?? ""
   ).trim();
 
@@ -1216,13 +1223,15 @@ export async function crearVisita(req, res) {
     try {
       logRid(rid, "FLOW decision", {
         clienteTipo,
+        clienteTipoNormalizado: normText(clienteTipo),
+        entraClienteNuevo: isClienteNuevo(clienteTipo),
         preguntaCodigo,
         thirdpartyRef,
         nombreCliente,
         nombreClienteNuevo,
       });
 
-      if (normText(clienteTipo) === "cliente nuevo") {
+      if (isClienteNuevo(clienteTipo)) {
         result.clienteNuevo = await createThirdpartyIfNew({
           clienteTipo,
           nombreClienteNuevo,
