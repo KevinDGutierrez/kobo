@@ -188,6 +188,7 @@ function logRid(rid, msg, obj) {
   if (!DEBUG) return;
   try {
     const payload = obj === undefined ? "" : ` ${JSON.stringify(obj).slice(0, RAW_LOG_MAX)}`;
+    console.log(`[VISIT ${rid}] ${msg}${payload}`);
   } catch {
     console.log(`[VISIT ${rid}] ${msg}`);
   }
@@ -270,6 +271,25 @@ function parseSpanishDateToUnix(raw) {
 
   const d = new Date(year, mon, day, 12, 0, 0);
   return Math.floor(d.getTime() / 1000);
+}
+
+function parseDateFlexibleToUnix(raw) {
+  if (!raw) return null;
+
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.floor(raw);
+  }
+
+  const s = String(raw).trim();
+  if (!s) return null;
+
+  const direct = Date.parse(s);
+  if (!Number.isNaN(direct)) return Math.floor(direct / 1000);
+
+  const es = parseSpanishDateToUnix(s);
+  if (es) return es;
+
+  return null;
 }
 
 function mapOpportunityStatusToId(label) {
@@ -798,7 +818,7 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
 }
 
 async function createOpportunityIfRequested({ body, tercero, note, rid, user }) {
-  logRid(rid, "OPORTUNIDAD flow start", { terceroId: tercero?.id ?? null, userId: user?.id ?? null });
+  logRid(rid, "OPORTUNIDAD flow start", { terceroId: tercero?.id ?? null });
 
   const wants = firstNonEmpty(body, [
     "ventas_oportunidad/quiere_oportunidad",
@@ -841,6 +861,7 @@ async function createOpportunityIfRequested({ body, tercero, note, rid, user }) 
     "dolibarr/oportunidad_fecha_final",
     "dolibarr.oportunidad_fecha_final",
     "fecha_fin",
+    "end",
   ]);
 
   const oppAmount = firstNonEmpty(body, [
@@ -862,7 +883,7 @@ async function createOpportunityIfRequested({ body, tercero, note, rid, user }) 
 
   const fkOppStatus = mapOpportunityStatusToId(statusLabel);
   const nowUnix = Math.floor(Date.now() / 1000);
-  const dateEndUnix = parseSpanishDateToUnix(dateEndRaw);
+  const dateEndUnix = parseDateFlexibleToUnix(dateEndRaw);
   const generatedRef = generateOpportunityRef();
 
   logRid(rid, "OPORTUNIDAD parsed", {
@@ -888,6 +909,7 @@ async function createOpportunityIfRequested({ body, tercero, note, rid, user }) 
       status: 1,
       usage_opportunity: 1,
       dateo: nowUnix,
+      datec: nowUnix,
     };
 
     if (tercero?.id) payload.socid = Number(tercero.id);
@@ -913,6 +935,8 @@ async function createOpportunityIfRequested({ body, tercero, note, rid, user }) 
       projectId: r?.data ?? null,
       ref: generatedRef,
       oppStatusId: fkOppStatus ?? null,
+      dateStartUnix: nowUnix,
+      dateEndUnix: dateEndUnix ?? null,
     };
   } catch (e) {
     console.log(
@@ -1032,6 +1056,8 @@ export async function crearVisita(req, res) {
         "ventas_oportunidad.oportunidad_fecha_final",
         "oportunidad_fecha_final",
         "fecha_fin",
+        "start",
+        "end",
         "dolibarr/descripcion",
         "dolibarr.descripcion",
         "descripcion",
@@ -1349,6 +1375,7 @@ export async function crearVisita(req, res) {
     const status = error?.response?.status;
     const data = error?.response?.data;
 
+    console.log(`[VISIT ${rid}] ERROR status=${status} message=${error?.message}`);
     if (data) console.log(`[VISIT ${rid}] ERROR data=`, JSON.stringify(data));
 
     return res.status(500).json({
