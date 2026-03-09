@@ -909,7 +909,7 @@ async function createOpportunityIfRequested({ body, tercero, note, rid, user }) 
       status: 1,
       usage_opportunity: 1,
       dateo: nowUnix,
-      datec: nowUnix,
+      datee: nowUnix,
     };
 
     if (tercero?.id) payload.socid = Number(tercero.id);
