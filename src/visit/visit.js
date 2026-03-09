@@ -4,7 +4,7 @@ import { apiClient, endpoints } from "../service/api.js";
 import { sendNoClientEmail, getEmailForSubmitter } from "../service/email-sender.js";
 
 const DEBUG = process.env.DEBUG_VISIT === "1";
-const RAW_LOG_MAX = 1200;
+const RAW_LOG_MAX = 2000;
 
 function asArray(data) {
   if (Array.isArray(data)) return data;
@@ -47,6 +47,12 @@ function normEmail(e) {
   return String(e ?? "").trim().toLowerCase();
 }
 
+function truncate128(s) {
+  const x = String(s ?? "").trim();
+  if (!x) return "";
+  return x.length > 128 ? x.slice(0, 128) : x;
+}
+
 function getValue(obj, key) {
   if (!obj) return undefined;
   if (Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
@@ -65,12 +71,6 @@ function firstNonEmpty(obj, keys) {
     if (v !== undefined && v !== null && String(v).trim() !== "") return v;
   }
   return null;
-}
-
-function truncate128(s) {
-  const x = String(s ?? "").trim();
-  if (!x) return "";
-  return x.length > 128 ? x.slice(0, 128) : x;
 }
 
 function parseGeoPoint(raw) {
@@ -156,8 +156,7 @@ async function reverseGeocode(lat, lon) {
 
     const url = "https://maps.googleapis.com/maps/api/geocode/json";
     const r = await axios.get(url, { params: { latlng: `${lat},${lon}`, key } });
-    const best = r?.data?.results?.[0]?.formatted_address || null;
-    return best;
+    return r?.data?.results?.[0]?.formatted_address || null;
   }
 
   const email = process.env.NOMINATIM_EMAIL || "no-reply@example.com";
@@ -177,8 +176,8 @@ async function reverseGeocode(lat, lon) {
 function logRid(rid, msg, obj) {
   if (!DEBUG) return;
   try {
-    const safe = obj === undefined ? "" : ` ${JSON.stringify(obj).slice(0, RAW_LOG_MAX)}`;
-    console.log(`[VISIT ${rid}] ${msg}${safe}`);
+    const txt = obj === undefined ? "" : ` ${JSON.stringify(obj).slice(0, RAW_LOG_MAX)}`;
+    console.log(`[VISIT ${rid}] ${msg}${txt}`);
   } catch {
     console.log(`[VISIT ${rid}] ${msg}`);
   }
@@ -220,11 +219,7 @@ function parseSpanishDateToUnix(raw) {
   const iso = Date.parse(s);
   if (!Number.isNaN(iso)) return Math.floor(iso / 1000);
 
-  const cleaned = s
-    .toLowerCase()
-    .replace(/\./g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleaned = s.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
 
   const months = {
     ene: 0,
@@ -279,6 +274,18 @@ function mapOpportunityStatusToId(label) {
   return null;
 }
 
+function generateOpportunityRef() {
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(-2);
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `PJ${yy}${mm}${dd}${hh}${mi}${ss}${rnd}`;
+}
+
 async function findThirdpartyByRef(ref, rid) {
   const target = norm(ref);
 
@@ -286,13 +293,13 @@ async function findThirdpartyByRef(ref, rid) {
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.code_client:=:${encodeURIComponent(
       target
     )})`;
-    logRid(rid, "thirdparty search(sql ref) ->", { url, target });
+    logRid(rid, "thirdparty search ref sql start", { ref, target, url });
 
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
 
-    logRid(rid, "thirdparty search(sql ref) result", {
+    logRid(rid, "thirdparty search ref sql result", {
       rows: list.length,
       found: Boolean(exact),
       foundId: exact?.id ?? null,
@@ -315,13 +322,15 @@ async function findThirdpartyByRef(ref, rid) {
 
   while (true) {
     try {
+      logRid(rid, "thirdparty paging ref page", { page, limit, target });
+
       const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) return null;
 
       const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
       if (found) {
-        logRid(rid, "thirdparty paging(ref) FOUND", {
+        logRid(rid, "thirdparty paging ref found", {
           id: found?.id,
           code_client: found?.code_client,
           ref: found?.ref,
@@ -371,16 +380,18 @@ async function findThirdpartyByNameSmart(nombre, rid) {
   try {
     const like = `%${query}%`;
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(like)})`;
-    logRid(rid, "thirdparty search(name like) ->", { url, query });
+    logRid(rid, "thirdparty search name sql start", { query, like, url });
 
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const best = pickBest(list);
 
-    logRid(rid, "thirdparty search(name like) result", {
+    logRid(rid, "thirdparty search name sql result", {
+      query,
       rows: list.length,
       found: Boolean(best),
       foundId: best?.id ?? null,
+      foundName: best?.nom ?? best?.name ?? null,
     });
 
     if (best) return best;
@@ -400,6 +411,8 @@ async function findThirdpartyByNameSmart(nombre, rid) {
 
   while (true) {
     try {
+      logRid(rid, "thirdparty paging name page", { query, page, limit });
+
       const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) break;
@@ -432,11 +445,13 @@ async function findThirdpartyByNameSmart(nombre, rid) {
   const GAP = 120;
   const ok = bestScore >= MIN && bestScore - secondBest >= GAP;
 
-  logRid(rid, "thirdparty paging(name) best", {
+  logRid(rid, "thirdparty paging name final", {
+    query,
     ok,
     bestScore,
     secondBest,
     bestId: best?.id ?? null,
+    bestName: best?.nom ?? best?.name ?? null,
   });
 
   if (ok) return best;
@@ -450,16 +465,18 @@ async function findThirdpartyByNameExact(nombre, rid) {
   try {
     const like = `%${query}%`;
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(like)})`;
-    logRid(rid, "thirdparty search(exact new client) ->", { url, query });
+    logRid(rid, "thirdparty search exact new client start", { query, url });
 
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((t) => normText(t?.nom ?? t?.name) === normText(query));
 
-    logRid(rid, "thirdparty search(exact new client) result", {
+    logRid(rid, "thirdparty search exact new client result", {
+      query,
       rows: list.length,
       found: Boolean(exact),
       foundId: exact?.id ?? null,
+      foundName: exact?.nom ?? exact?.name ?? null,
     });
 
     return exact || null;
@@ -483,22 +500,26 @@ async function createThirdpartyIfNew({
   user,
   rid,
 }) {
+  logRid(rid, "new client flow start", {
+    clienteTipo,
+    nombreClienteNuevo,
+    correoClienteNuevo,
+    numeroClienteNuevo,
+    locationText,
+    userId: user?.id ?? null,
+  });
+
   if (normText(clienteTipo) !== "cliente nuevo") {
-    return { created: false, tercero: null, reason: "NO_ES_CLIENTE_NUEVO" };
+    return { attempted: false, created: false, tercero: null, reason: "NO_ES_CLIENTE_NUEVO" };
   }
 
   if (!nombreClienteNuevo) {
-    logRid(rid, "new client skip", { reason: "SIN_NOMBRE_CLIENTE_NUEVO" });
-    return { created: false, tercero: null, reason: "SIN_NOMBRE_CLIENTE_NUEVO" };
+    return { attempted: true, created: false, tercero: null, reason: "SIN_NOMBRE_CLIENTE_NUEVO" };
   }
 
   const found = await findThirdpartyByNameExact(nombreClienteNuevo, rid);
   if (found) {
-    logRid(rid, "new client already exists", {
-      terceroId: found?.id ?? null,
-      terceroName: found?.nom ?? found?.name ?? null,
-    });
-    return { created: false, tercero: found, reason: "YA_EXISTE" };
+    return { attempted: true, created: false, tercero: found, reason: "YA_EXISTE" };
   }
 
   const payload = {
@@ -512,7 +533,7 @@ async function createThirdpartyIfNew({
 
   if (user?.id) payload.commercial_id = Number(user.id);
 
-  logRid(rid, "thirdparty create(new client) payload", payload);
+  logRid(rid, "new client create payload", payload);
 
   try {
     const createResponse = await apiClient.post(endpoints.thirdpartiesEndpoint, payload);
@@ -520,21 +541,21 @@ async function createThirdpartyIfNew({
     const details = await apiClient.get(`${endpoints.thirdpartiesEndpoint}/${socid}`);
     const tercero = details.data || null;
 
-    logRid(rid, "thirdparty created(new client)", {
+    logRid(rid, "new client created ok", {
       socid,
-      terceroId: tercero?.id ?? socid,
+      terceroId: tercero?.id ?? null,
       terceroName: tercero?.name ?? tercero?.nom ?? null,
       terceroCode: tercero?.code_client ?? null,
     });
 
-    return { created: true, tercero, reason: "CREADO" };
+    return { attempted: true, created: true, tercero, reason: "CREADO" };
   } catch (e) {
     console.log(
       `[VISIT ${rid}] thirdparty create(new client) ERROR:`,
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    return { created: false, tercero: null, reason: "ERROR_CREANDO_CLIENTE_NUEVO" };
+    return { attempted: true, created: false, tercero: null, reason: "ERROR_CREANDO_CLIENTE_NUEVO" };
   }
 }
 
@@ -543,16 +564,17 @@ async function findUserByLogin(login, rid) {
 
   try {
     const url = `${endpoints.usersEndpoint}?sqlfilters=(t.login:=:${encodeURIComponent(login)})`;
-    logRid(rid, "user search(sql) ->", { url, login });
+    logRid(rid, "user search sql start", { login, target, url });
 
     const res = await apiClient.get(url);
     const list = asArray(res.data);
     const exact = list.find((u) => normLogin(u?.login) === target);
 
-    logRid(rid, "user search(sql) result", {
+    logRid(rid, "user search sql result", {
       rows: list.length,
       found: Boolean(exact),
       userId: exact?.id ?? null,
+      userLogin: exact?.login ?? null,
     });
 
     if (exact) return exact;
@@ -596,10 +618,11 @@ async function listContactsBySocid(socid, rid) {
 
   try {
     const url = `${endpoints.contactsEndpoint}?sqlfilters=(fk_soc:=:${socid})`;
-    logRid(rid, "contacts list ->", { url });
-
+    logRid(rid, "contacts list start", { socid, url });
     const res = await apiClient.get(url);
-    return asArray(res.data);
+    const list = asArray(res.data);
+    logRid(rid, "contacts list result", { socid, rows: list.length });
+    return list;
   } catch (e) {
     if (e?.response?.status === 404) return [];
     console.log(
@@ -630,9 +653,10 @@ function contactMatches(existing, desired) {
 }
 
 async function ensureContactIfRequested({ body, tercero, rid }) {
+  logRid(rid, "contact flow start", { terceroId: tercero?.id ?? null });
+
   if (!endpoints?.contactsEndpoint) {
-    logRid(rid, "contact skip", { reason: "SIN_ENDPOINT_CONTACTS" });
-    return { done: true, created: false, reason: "SIN_ENDPOINT_CONTACTS" };
+    return { attempted: false, done: false, created: false, reason: "SIN_ENDPOINT_CONTACTS" };
   }
 
   const wants = firstNonEmpty(body, [
@@ -644,10 +668,8 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     "contacto_cliente_00",
   ]);
 
-  logRid(rid, "contact wants", { wants, terceroId: tercero?.id ?? null });
-
   if (!parseYesNo(wants)) {
-    return { done: false, reason: "NO_SOLICITADO" };
+    return { attempted: false, done: false, created: false, reason: "NO_SOLICITADO" };
   }
 
   const firstname = String(
@@ -703,10 +725,15 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     desired.phone ||
     desired.email;
 
-  logRid(rid, "contact parsed", { desired, hasSomething });
+  logRid(rid, "contact parsed", {
+    wants,
+    desired,
+    hasSomething,
+    terceroId: tercero?.id ?? null,
+  });
 
   if (!hasSomething) {
-    return { done: false, reason: "SIN_DATOS_CONTACTO" };
+    return { attempted: true, done: false, created: false, reason: "SIN_DATOS_CONTACTO" };
   }
 
   const socid = tercero?.id ? Number(tercero.id) : null;
@@ -715,7 +742,7 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
     const existing = await listContactsBySocid(socid, rid);
     const exists = existing.some((c) => contactMatches(c, desired));
     if (exists) {
-      return { done: true, created: false, reason: "YA_EXISTE" };
+      return { attempted: true, done: true, created: false, reason: "YA_EXISTE", linkedSocid: socid };
     }
   }
 
@@ -736,7 +763,13 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
 
     const r = await apiClient.post(endpoints.contactsEndpoint, payload);
 
+    logRid(rid, "contact created ok", {
+      contactId: r?.data ?? null,
+      linkedSocid: socid ?? null,
+    });
+
     return {
+      attempted: true,
       done: true,
       created: true,
       contactId: r?.data ?? null,
@@ -748,11 +781,13 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    return { done: true, created: false, reason: "ERROR_CREANDO" };
+    return { attempted: true, done: true, created: false, reason: "ERROR_CREANDO" };
   }
 }
 
 async function createOpportunityIfRequested({ body, tercero, note, rid }) {
+  logRid(rid, "opportunity flow start", { terceroId: tercero?.id ?? null });
+
   const wants = firstNonEmpty(body, [
     "ventas_oportunidad/quiere_oportunidad",
     "ventas_oportunidad.quiere_oportunidad",
@@ -761,14 +796,12 @@ async function createOpportunityIfRequested({ body, tercero, note, rid }) {
     "dolibarr.quiere_oportunidad",
   ]);
 
-  logRid(rid, "opportunity wants", { wants, terceroId: tercero?.id ?? null });
-
   if (!parseYesNo(wants)) {
-    return { done: false, reason: "NO_SOLICITADO" };
+    return { attempted: false, done: false, created: false, reason: "NO_SOLICITADO" };
   }
 
   if (!endpoints?.projectsEndpoint) {
-    return { done: false, reason: "SIN_ENDPOINT_PROJECTS" };
+    return { attempted: true, done: false, created: false, reason: "SIN_ENDPOINT_PROJECTS" };
   }
 
   const title =
@@ -815,30 +848,37 @@ async function createOpportunityIfRequested({ body, tercero, note, rid }) {
   ]);
 
   const fkOppStatus = mapOpportunityStatusToId(statusLabel);
+  const nowUnix = Math.floor(Date.now() / 1000);
   const dateEndUnix = parseSpanishDateToUnix(dateEndRaw);
+  const generatedRef = generateOpportunityRef();
 
   logRid(rid, "opportunity parsed", {
+    wants,
     title,
     statusLabel,
     fkOppStatus,
     dateEndRaw,
     dateEndUnix,
+    nowUnix,
     oppAmount,
     budgetAmount,
+    generatedRef,
     terceroId: tercero?.id ?? null,
   });
 
   try {
     const payload = {
+      ref: generatedRef,
       title: String(title).trim(),
       description: String(note ?? "").trim(),
       status: 1,
       usage_opportunity: 1,
+      dateo: nowUnix,
     };
 
     if (tercero?.id) payload.socid = Number(tercero.id);
     if (fkOppStatus != null) payload.opp_status = fkOppStatus;
-    if (dateEndUnix) payload.date_end = dateEndUnix;
+    if (dateEndUnix) payload.datee = dateEndUnix;
     if (oppAmount != null && String(oppAmount).trim() !== "") payload.opp_amount = String(oppAmount).trim();
     if (budgetAmount != null && String(budgetAmount).trim() !== "") payload.budget_amount = String(budgetAmount).trim();
 
@@ -846,12 +886,17 @@ async function createOpportunityIfRequested({ body, tercero, note, rid }) {
 
     const r = await apiClient.post(endpoints.projectsEndpoint, payload);
 
-    logRid(rid, "opportunity created", { projectId: r?.data ?? null });
+    logRid(rid, "opportunity created ok", {
+      projectId: r?.data ?? null,
+      ref: generatedRef,
+    });
 
     return {
+      attempted: true,
       done: true,
       created: true,
       projectId: r?.data ?? null,
+      ref: generatedRef,
       oppStatusId: fkOppStatus ?? null,
     };
   } catch (e) {
@@ -860,16 +905,36 @@ async function createOpportunityIfRequested({ body, tercero, note, rid }) {
       e?.response?.status,
       JSON.stringify(e?.response?.data || e.message)
     );
-    return { done: true, created: false, reason: "ERROR_CREANDO_OPORTUNIDAD" };
+    return { attempted: true, done: true, created: false, reason: "ERROR_CREANDO_OPORTUNIDAD" };
   }
 }
 
 export async function crearVisita(req, res) {
   const rid = crypto.randomUUID();
 
+  const result = {
+    rid,
+    status: "PROCESADO",
+    terceroModo: "SIN_CLIENTE",
+    thirdpartyId: null,
+    thirdpartyName: null,
+    thirdpartyRef: null,
+    nombreCliente: null,
+    numeroCliente: null,
+    asesorLogin: null,
+    userId: null,
+    userLogin: null,
+    location: null,
+    clienteNuevo: null,
+    contact: null,
+    oportunidad: null,
+    event: null,
+    warnings: [],
+    errors: [],
+  };
+
   try {
     const body = req.body || {};
-
     logRid(rid, "BODY_KEYS", Object.keys(body));
 
     const clienteTipo = firstNonEmpty(body, [
@@ -972,12 +1037,28 @@ export async function crearVisita(req, res) {
       correoClienteNuevo,
       numeroClienteNuevo,
       asesorLogin,
+      note,
+      ubicacionRaw,
     });
 
-    if (!asesorLogin) return res.status(200).json({ status: "SIN asesor_login" });
+    result.thirdpartyRef = thirdpartyRef || null;
+    result.nombreCliente = nombreCliente || nombreClienteNuevo || null;
+    result.numeroCliente = numeroCliente || numeroClienteNuevo || null;
+    result.asesorLogin = asesorLogin || null;
+
+    if (!asesorLogin) {
+      result.errors.push("SIN asesor_login");
+      return res.status(200).json(result);
+    }
 
     const user = await findUserByLogin(asesorLogin, rid);
-    if (!user) return res.status(200).json({ asesorLogin, status: "USUARIO NO EXISTE (login exacto)" });
+    if (!user) {
+      result.errors.push("USUARIO NO EXISTE (login exacto)");
+      return res.status(200).json(result);
+    }
+
+    result.userId = user.id ?? null;
+    result.userLogin = user.login ?? null;
 
     let locationText = firstNonEmpty(body, [
       "ubicacion_texto",
@@ -990,42 +1071,60 @@ export async function crearVisita(req, res) {
       const gp = parseGeoPoint(ubicacionRaw);
       if (gp) {
         try {
-          const addr = await reverseGeocode(gp.lat, gp.lon);
-          locationText = addr || null;
+          locationText = (await reverseGeocode(gp.lat, gp.lon)) || null;
         } catch (e) {
           console.log(`[VISIT ${rid}] reverseGeocode ERROR:`, e?.message || String(e));
+          result.warnings.push("ERROR_REVERSE_GEOCODE");
         }
       }
     }
 
+    result.location = truncate128(locationText);
+
     let tercero = null;
     let terceroModo = "SIN_CLIENTE";
-    let clienteNuevoResult = null;
 
-    if (normText(clienteTipo) === "cliente nuevo") {
-      clienteNuevoResult = await createThirdpartyIfNew({
-        clienteTipo,
-        nombreClienteNuevo,
-        correoClienteNuevo,
-        numeroClienteNuevo,
-        locationText,
-        user,
-        rid,
-      });
+    try {
+      if (normText(clienteTipo) === "cliente nuevo") {
+        const clienteNuevoResult = await createThirdpartyIfNew({
+          clienteTipo,
+          nombreClienteNuevo,
+          correoClienteNuevo,
+          numeroClienteNuevo,
+          locationText,
+          user,
+          rid,
+        });
 
-      if (clienteNuevoResult?.tercero) {
-        tercero = clienteNuevoResult.tercero;
-        terceroModo = clienteNuevoResult.created ? "CLIENTE_NUEVO_CREADO" : "CLIENTE_NUEVO_YA_EXISTIA";
+        result.clienteNuevo = clienteNuevoResult;
+
+        if (clienteNuevoResult?.tercero) {
+          tercero = clienteNuevoResult.tercero;
+          terceroModo = clienteNuevoResult.created ? "CLIENTE_NUEVO_CREADO" : "CLIENTE_NUEVO_YA_EXISTIA";
+        } else if (clienteNuevoResult?.attempted && !clienteNuevoResult?.created) {
+          result.warnings.push(clienteNuevoResult.reason || "FALLO_CREAR_CLIENTE_NUEVO");
+        }
+      } else {
+        if (parseYesNo(preguntaCodigo) && thirdpartyRef) {
+          tercero = await findThirdpartyByRef(thirdpartyRef, rid);
+          if (tercero) terceroModo = "ASOCIADO_POR_CODIGO";
+          else result.warnings.push("CLIENTE_NO_ENCONTRADO_POR_CODIGO");
+        } else if (nombreCliente) {
+          tercero = await findThirdpartyByNameSmart(nombreCliente, rid);
+          if (tercero) terceroModo = "ASOCIADO_POR_NOMBRE_PARCIAL";
+          else result.warnings.push("CLIENTE_NO_ENCONTRADO_POR_NOMBRE");
+        } else {
+          result.warnings.push("SIN_DATOS_DE_CLIENTE");
+        }
       }
-    } else {
-      if (parseYesNo(preguntaCodigo) && thirdpartyRef) {
-        tercero = await findThirdpartyByRef(thirdpartyRef, rid);
-        if (tercero) terceroModo = "ASOCIADO_POR_CODIGO";
-      } else if (nombreCliente) {
-        tercero = await findThirdpartyByNameSmart(nombreCliente, rid);
-        if (tercero) terceroModo = "ASOCIADO_POR_NOMBRE_PARCIAL";
-      }
+    } catch (e) {
+      console.log(`[VISIT ${rid}] tercero global ERROR:`, e?.message || String(e));
+      result.errors.push("ERROR_FLUJO_TERCERO");
     }
+
+    result.terceroModo = terceroModo;
+    result.thirdpartyId = tercero?.id ?? null;
+    result.thirdpartyName = tercero ? tercero.nom || tercero.name || tercero.ref || null : null;
 
     logRid(rid, "TERCERO_RESULT", {
       terceroModo,
@@ -1033,66 +1132,90 @@ export async function crearVisita(req, res) {
       terceroRef: tercero?.ref ?? null,
       terceroCode: tercero?.code_client ?? null,
       terceroNom: tercero?.nom ?? tercero?.name ?? null,
-      clienteNuevoResult,
     });
 
-    const contactResult = await ensureContactIfRequested({ body, tercero, rid });
-    const opportunityResult = await createOpportunityIfRequested({ body, tercero, note, rid });
-
-    const now = Math.floor(Date.now() / 1000);
-
-    const agendaPayload = {
-      userownerid: Number(user.id),
-      type_code: "AC_RDV",
-      label: "Visita de ventas",
-      note,
-      datep: now,
-      datef: now,
-      location: truncate128(locationText),
-    };
-
-    if (tercero?.id) agendaPayload.socid = Number(tercero.id);
-
-    logRid(rid, "agenda payload", agendaPayload);
-
-    const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
-
-    if (terceroModo === "SIN_CLIENTE") {
-      try {
-        const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
-        logRid(rid, "email resolve", { to });
-
-        if (to) {
-          await sendNoClientEmail(to, {
-            userLogin: user.login,
-            eventId: created.data,
-            nombreCliente: nombreCliente || nombreClienteNuevo,
-            thirdpartyRef,
-          });
-          logRid(rid, "email sent", { to, eventId: created.data });
-        }
-      } catch (e) {
-        console.log(`[VISIT ${rid}] sendNoClientEmail ERROR:`, e?.message || String(e));
+    try {
+      result.contact = await ensureContactIfRequested({ body, tercero, rid });
+      if (result.contact?.reason && !result.contact?.created && result.contact?.attempted) {
+        result.warnings.push(`CONTACT_${result.contact.reason}`);
       }
+    } catch (e) {
+      console.log(`[VISIT ${rid}] contact global ERROR:`, e?.message || String(e));
+      result.errors.push("ERROR_FLUJO_CONTACTO");
     }
 
-    return res.status(200).json({
-      status: "VISITA CREADA",
-      eventId: created.data,
-      terceroModo,
-      thirdpartyId: tercero?.id ?? null,
-      thirdpartyName: tercero ? (tercero.nom || tercero.name || tercero.ref || null) : null,
-      thirdpartyRef: thirdpartyRef || null,
-      nombreCliente: nombreCliente || nombreClienteNuevo || null,
-      numeroCliente: numeroCliente || numeroClienteNuevo || null,
-      asesorLogin,
-      userId: user.id,
-      userLogin: user.login,
-      location: agendaPayload.location,
-      contact: contactResult,
-      clienteNuevo: clienteNuevoResult,
-      oportunidad: opportunityResult,
-    });
+    try {
+      result.oportunidad = await createOpportunityIfRequested({ body, tercero, note, rid });
+      if (result.oportunidad?.reason && !result.oportunidad?.created && result.oportunidad?.attempted) {
+        result.warnings.push(`OPORTUNIDAD_${result.oportunidad.reason}`);
+      }
+    } catch (e) {
+      console.log(`[VISIT ${rid}] opportunity global ERROR:`, e?.message || String(e));
+      result.errors.push("ERROR_FLUJO_OPORTUNIDAD");
+    }
+
+    try {
+      const now = Math.floor(Date.now() / 1000);
+
+      const agendaPayload = {
+        userownerid: Number(user.id),
+        type_code: "AC_RDV",
+        label: "Visita de ventas",
+        note,
+        datep: now,
+        datef: now,
+        location: truncate128(locationText),
+      };
+
+      if (tercero?.id) agendaPayload.socid = Number(tercero.id);
+
+      logRid(rid, "agenda create payload", agendaPayload);
+
+      const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
+
+      result.event = {
+        created: true,
+        eventId: created.data,
+      };
+
+      if (terceroModo === "SIN_CLIENTE") {
+        try {
+          const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
+
+          logRid(rid, "email resolve", {
+            to,
+            thirdpartyRef,
+            nombreCliente: nombreCliente || nombreClienteNuevo || null,
+          });
+
+          if (to) {
+            await sendNoClientEmail(to, {
+              userLogin: user.login,
+              eventId: created.data,
+              nombreCliente: nombreCliente || nombreClienteNuevo,
+              thirdpartyRef,
+            });
+            logRid(rid, "email sent", { to, eventId: created.data });
+          } else {
+            result.warnings.push("NO_HAY_EMAIL_PARA_NOTIFICAR");
+          }
+        } catch (e) {
+          console.log(`[VISIT ${rid}] sendNoClientEmail ERROR:`, e?.message || String(e));
+          result.warnings.push("ERROR_ENVIO_CORREO");
+        }
+      }
+    } catch (e) {
+      console.log(
+        `[VISIT ${rid}] agenda create ERROR:`,
+        e?.response?.status,
+        JSON.stringify(e?.response?.data || e.message)
+      );
+      result.event = { created: false, reason: "ERROR_CREANDO_EVENTO" };
+      result.errors.push("ERROR_FLUJO_EVENTO");
+    }
+
+    result.status = result.event?.created ? "VISITA CREADA" : "PROCESADO_CON_ERRORES";
+    return res.status(200).json(result);
   } catch (error) {
     const status = error?.response?.status;
     const data = error?.response?.data;
@@ -1102,6 +1225,7 @@ export async function crearVisita(req, res) {
 
     return res.status(500).json({
       rid,
+      status: "ERROR_GENERAL",
       error: data || error.message || String(error),
     });
   }
