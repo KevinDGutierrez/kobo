@@ -188,7 +188,6 @@ function logRid(rid, msg, obj) {
   if (!DEBUG) return;
   try {
     const payload = obj === undefined ? "" : ` ${JSON.stringify(obj).slice(0, RAW_LOG_MAX)}`;
-    console.log(`[VISIT ${rid}] ${msg}${payload}`);
   } catch {
     console.log(`[VISIT ${rid}] ${msg}`);
   }
@@ -317,12 +316,6 @@ async function findThirdpartyByRef(ref, rid) {
       foundId: exact?.id ?? null,
       foundCode: exact?.code_client ?? null,
       foundRef: exact?.ref ?? null,
-      sample: list.slice(0, 5).map((x) => ({
-        id: x?.id,
-        code_client: x?.code_client ?? null,
-        ref: x?.ref ?? null,
-        name: x?.nom ?? x?.name ?? null,
-      })),
     });
 
     if (exact) return exact;
@@ -340,22 +333,12 @@ async function findThirdpartyByRef(ref, rid) {
 
   while (true) {
     try {
-      logRid(rid, "CLIENTE_POR_CODIGO paging", { page, limit, target });
-
       const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) return null;
 
       const found = list.find((t) => norm(t?.code_client) === target || norm(t?.ref) === target);
-      if (found) {
-        logRid(rid, "CLIENTE_POR_CODIGO paging found", {
-          id: found?.id,
-          code_client: found?.code_client,
-          ref: found?.ref,
-          name: found?.nom ?? found?.name ?? null,
-        });
-        return found;
-      }
+      if (found) return found;
 
       page++;
       if (page > 300) return null;
@@ -412,11 +395,6 @@ async function findThirdpartyByNameSmart(nombre, rid) {
       found: Boolean(best),
       foundId: best?.id ?? null,
       foundName: best?.nom ?? best?.name ?? null,
-      sample: list.slice(0, 5).map((x) => ({
-        id: x?.id,
-        name: x?.nom ?? x?.name ?? null,
-        code_client: x?.code_client ?? null,
-      })),
     });
 
     if (best) return best;
@@ -436,8 +414,6 @@ async function findThirdpartyByNameSmart(nombre, rid) {
 
   while (true) {
     try {
-      logRid(rid, "CLIENTE_POR_NOMBRE paging", { query, page, limit });
-
       const res = await apiClient.get(endpoints.thirdpartiesEndpoint, { params: { limit, page } });
       const list = asArray(res.data);
       if (!list.length) break;
@@ -503,11 +479,6 @@ async function findThirdpartyByNameExact(nombre, rid) {
       found: Boolean(exact),
       foundId: exact?.id ?? null,
       foundName: exact?.name ?? exact?.nom ?? null,
-      sample: list.slice(0, 5).map((x) => ({
-        id: x?.id,
-        name: x?.name ?? x?.nom ?? null,
-        code_client: x?.code_client ?? null,
-      })),
     });
 
     return exact || null;
@@ -543,23 +514,14 @@ async function createThirdpartyIfNew({
   });
 
   if (!isClienteNuevo(clienteTipo)) {
-    logRid(rid, "CLIENTE_NUEVO skip", { reason: "NO_ES_CLIENTE_NUEVO" });
     return { attempted: false, created: false, tercero: null, reason: "NO_ES_CLIENTE_NUEVO" };
   }
 
   if (!nombreClienteNuevo) {
-    logRid(rid, "CLIENTE_NUEVO skip", { reason: "SIN_NOMBRE_CLIENTE_NUEVO" });
     return { attempted: true, created: false, tercero: null, reason: "SIN_NOMBRE_CLIENTE_NUEVO" };
   }
 
   const found = await findThirdpartyByNameExact(nombreClienteNuevo, rid);
-
-  logRid(rid, "CLIENTE_NUEVO existing search", {
-    searchedName: nombreClienteNuevo,
-    found: Boolean(found),
-    foundId: found?.id ?? null,
-    foundName: found?.name ?? found?.nom ?? null,
-  });
 
   if (found) {
     return { attempted: true, created: false, tercero: found, reason: "YA_EXISTE" };
@@ -581,13 +543,11 @@ async function createThirdpartyIfNew({
   try {
     const createResponse = await apiClient.post(endpoints.thirdpartiesEndpoint, payload);
     const socid = createResponse.data;
-
-    logRid(rid, "CLIENTE_NUEVO create response", { socid });
-
     const details = await apiClient.get(`${endpoints.thirdpartiesEndpoint}/${socid}`);
     const tercero = details.data || null;
 
-    logRid(rid, "CLIENTE_NUEVO details", {
+    logRid(rid, "CLIENTE_NUEVO created", {
+      socid,
       terceroId: tercero?.id ?? null,
       terceroName: tercero?.name ?? tercero?.nom ?? null,
       terceroCode: tercero?.code_client ?? null,
@@ -837,8 +797,8 @@ async function ensureContactIfRequested({ body, tercero, rid }) {
   }
 }
 
-async function createOpportunityIfRequested({ body, tercero, note, rid }) {
-  logRid(rid, "OPORTUNIDAD flow start", { terceroId: tercero?.id ?? null });
+async function createOpportunityIfRequested({ body, tercero, note, rid, user }) {
+  logRid(rid, "OPORTUNIDAD flow start", { terceroId: tercero?.id ?? null, userId: user?.id ?? null });
 
   const wants = firstNonEmpty(body, [
     "ventas_oportunidad/quiere_oportunidad",
@@ -917,6 +877,7 @@ async function createOpportunityIfRequested({ body, tercero, note, rid }) {
     budgetAmount,
     generatedRef,
     terceroId: tercero?.id ?? null,
+    userId: user?.id ?? null,
   });
 
   try {
@@ -934,6 +895,7 @@ async function createOpportunityIfRequested({ body, tercero, note, rid }) {
     if (dateEndUnix) payload.datee = dateEndUnix;
     if (oppAmount != null && String(oppAmount).trim() !== "") payload.opp_amount = String(oppAmount).trim();
     if (budgetAmount != null && String(budgetAmount).trim() !== "") payload.budget_amount = String(budgetAmount).trim();
+    if (user?.id) payload.user_resp_id = Number(user.id);
 
     logRid(rid, "OPORTUNIDAD create payload", payload);
 
@@ -990,88 +952,92 @@ export async function crearVisita(req, res) {
     const body = req.body || {};
 
     logRid(rid, "BODY_KEYS", Object.keys(body));
-    logRid(rid, "BODY_RAW_DOLIBARR", pickRawFields(body, [
-      "dolibarr/cliente_nuevo",
-      "dolibarr.cliente_nuevo",
-      "cliente_nuevo",
-      "tipo_cliente",
-      "dolibarr/pregunta_codigo",
-      "dolibarr.pregunta_codigo",
-      "pregunta_codigo",
-      "dolibarr/tiene_ref",
-      "dolibarr.tiene_ref",
-      "tiene_ref",
-      "dolibarr/thirdparty_ref",
-      "dolibarr.thirdparty_ref",
-      "thirdparty_ref",
-      "codigo_cliente",
-      "cliente_codigo",
-      "dolibarr/nombre_cliente",
-      "dolibarr.nombre_cliente",
-      "nombre_cliente",
-      "cliente_nombre",
-      "nom",
-      "dolibarr/nombre_cliente_nuevo",
-      "dolibarr.nombre_cliente_nuevo",
-      "nombre_cliente_nuevo",
-      "nuevo_nombre_cliente",
-      "name",
-      "dolibarr/correo_cliente_nuevo",
-      "dolibarr.correo_cliente_nuevo",
-      "correo_cliente_nuevo",
-      "nuevo_correo_cliente",
-      "email",
-      "dolibarr/numero_cliente_nuevo",
-      "dolibarr.numero_cliente_nuevo",
-      "numero_cliente_nuevo",
-      "nuevo_numero_cliente",
-      "phone",
-      "dolibarr/asesor_login",
-      "dolibarr.asesor_login",
-      "asesor_login",
-      "login",
-      "dolibarr/contacto_cliente",
-      "dolibarr.contacto_cliente",
-      "contacto_cliente",
-      "dolibarr/contacto_cliente_00",
-      "dolibarr.contacto_cliente_00",
-      "contacto_cliente_00",
-      "datos_persona/nombre_contacto",
-      "datos_persona.nombre_contacto",
-      "nombre_contacto",
-      "datos_persona/apellido_contacto",
-      "datos_persona.apellido_contacto",
-      "apellido_contacto",
-      "datos_persona/numero_contacto",
-      "datos_persona.numero_contacto",
-      "numero_contacto",
-      "datos_persona/correo_contacto",
-      "datos_persona.correo_contacto",
-      "correo_contacto",
-      "ventas_oportunidad/quiere_oportunidad",
-      "ventas_oportunidad.quiere_oportunidad",
-      "quiere_oportunidad",
-      "ventas_oportunidad/oportunidad_titulo",
-      "ventas_oportunidad.oportunidad_titulo",
-      "oportunidad_titulo",
-      "ventas_oportunidad/oportunidad_estado",
-      "ventas_oportunidad.oportunidad_estado",
-      "oportunidad_estado",
-      "ventas_oportunidad/oportunidad_importe",
-      "ventas_oportunidad.oportunidad_importe",
-      "oportunidad_importe",
-      "ventas_oportunidad/oportunidad_presupuesto",
-      "ventas_oportunidad.oportunidad_presupuesto",
-      "oportunidad_presupuesto",
-      "ventas_oportunidad/oportunidad_fecha_final",
-      "ventas_oportunidad.oportunidad_fecha_final",
-      "oportunidad_fecha_final",
-      "fecha_fin",
-      "dolibarr/descripcion",
-      "dolibarr.descripcion",
-      "descripcion",
-      "note"
-    ]));
+    logRid(
+      rid,
+      "BODY_RAW_DOLIBARR",
+      pickRawFields(body, [
+        "dolibarr/cliente_nuevo",
+        "dolibarr.cliente_nuevo",
+        "cliente_nuevo",
+        "tipo_cliente",
+        "dolibarr/pregunta_codigo",
+        "dolibarr.pregunta_codigo",
+        "pregunta_codigo",
+        "dolibarr/tiene_ref",
+        "dolibarr.tiene_ref",
+        "tiene_ref",
+        "dolibarr/thirdparty_ref",
+        "dolibarr.thirdparty_ref",
+        "thirdparty_ref",
+        "codigo_cliente",
+        "cliente_codigo",
+        "dolibarr/nombre_cliente",
+        "dolibarr.nombre_cliente",
+        "nombre_cliente",
+        "cliente_nombre",
+        "nom",
+        "dolibarr/nombre_cliente_nuevo",
+        "dolibarr.nombre_cliente_nuevo",
+        "nombre_cliente_nuevo",
+        "nuevo_nombre_cliente",
+        "name",
+        "dolibarr/correo_cliente_nuevo",
+        "dolibarr.correo_cliente_nuevo",
+        "correo_cliente_nuevo",
+        "nuevo_correo_cliente",
+        "email",
+        "dolibarr/numero_cliente_nuevo",
+        "dolibarr.numero_cliente_nuevo",
+        "numero_cliente_nuevo",
+        "nuevo_numero_cliente",
+        "phone",
+        "dolibarr/asesor_login",
+        "dolibarr.asesor_login",
+        "asesor_login",
+        "login",
+        "dolibarr/contacto_cliente",
+        "dolibarr.contacto_cliente",
+        "contacto_cliente",
+        "dolibarr/contacto_cliente_00",
+        "dolibarr.contacto_cliente_00",
+        "contacto_cliente_00",
+        "datos_persona/nombre_contacto",
+        "datos_persona.nombre_contacto",
+        "nombre_contacto",
+        "datos_persona/apellido_contacto",
+        "datos_persona.apellido_contacto",
+        "apellido_contacto",
+        "datos_persona/numero_contacto",
+        "datos_persona.numero_contacto",
+        "numero_contacto",
+        "datos_persona/correo_contacto",
+        "datos_persona.correo_contacto",
+        "correo_contacto",
+        "ventas_oportunidad/quiere_oportunidad",
+        "ventas_oportunidad.quiere_oportunidad",
+        "quiere_oportunidad",
+        "ventas_oportunidad/oportunidad_titulo",
+        "ventas_oportunidad.oportunidad_titulo",
+        "oportunidad_titulo",
+        "ventas_oportunidad/oportunidad_estado",
+        "ventas_oportunidad.oportunidad_estado",
+        "oportunidad_estado",
+        "ventas_oportunidad/oportunidad_importe",
+        "ventas_oportunidad.oportunidad_importe",
+        "oportunidad_importe",
+        "ventas_oportunidad/oportunidad_presupuesto",
+        "ventas_oportunidad.oportunidad_presupuesto",
+        "oportunidad_presupuesto",
+        "ventas_oportunidad/oportunidad_fecha_final",
+        "ventas_oportunidad.oportunidad_fecha_final",
+        "oportunidad_fecha_final",
+        "fecha_fin",
+        "dolibarr/descripcion",
+        "dolibarr.descripcion",
+        "descripcion",
+        "note",
+      ])
+    );
 
     const clienteTipo = firstNonEmpty(body, [
       "dolibarr/cliente_nuevo",
@@ -1244,7 +1210,9 @@ export async function crearVisita(req, res) {
 
         if (result.clienteNuevo?.tercero) {
           tercero = result.clienteNuevo.tercero;
-          terceroModo = result.clienteNuevo.created ? "CLIENTE_NUEVO_CREADO" : "CLIENTE_NUEVO_YA_EXISTIA";
+          terceroModo = result.clienteNuevo.created
+            ? "CLIENTE_NUEVO_CREADO"
+            : "CLIENTE_NUEVO_YA_EXISTIA";
         } else if (result.clienteNuevo?.attempted) {
           result.warnings.push(result.clienteNuevo.reason || "FALLO_CREAR_CLIENTE_NUEVO");
         }
@@ -1297,9 +1265,13 @@ export async function crearVisita(req, res) {
     }
 
     try {
-      result.oportunidad = await createOpportunityIfRequested({ body, tercero, note, rid });
+      result.oportunidad = await createOpportunityIfRequested({ body, tercero, note, rid, user });
       logRid(rid, "OPORTUNIDAD_RESULT", result.oportunidad);
-      if (result.oportunidad?.reason && !result.oportunidad?.created && result.oportunidad?.attempted) {
+      if (
+        result.oportunidad?.reason &&
+        !result.oportunidad?.created &&
+        result.oportunidad?.attempted
+      ) {
         result.warnings.push(`OPORTUNIDAD_${result.oportunidad.reason}`);
       }
     } catch (e) {
@@ -1377,7 +1349,6 @@ export async function crearVisita(req, res) {
     const status = error?.response?.status;
     const data = error?.response?.data;
 
-    console.log(`[VISIT ${rid}] ERROR status=${status} message=${error?.message}`);
     if (data) console.log(`[VISIT ${rid}] ERROR data=`, JSON.stringify(data));
 
     return res.status(500).json({
