@@ -308,6 +308,13 @@ function generateOpportunityRef() {
   return `PJ${yy}${mm}${dd}${hh}${mi}${ss}${rnd}`;
 }
 
+function getGuatemalaUnixTime() {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const gt = new Date(utc - 6 * 3600000);
+  return Math.floor(gt.getTime() / 1000);
+}
+
 async function findThirdpartyByRef(ref) {
   const target = norm(ref);
 
@@ -731,7 +738,7 @@ async function createOpportunityIfRequested({ body, tercero, note, user }) {
   ]);
 
   const fkOppStatus = mapOpportunityStatusToId(statusLabel);
-  const nowUnix = Math.floor(Date.now() / 1000);
+  const nowUnix = getGuatemalaUnixTime();
   const dateEndUnix = parseDateFlexibleToUnix(dateEndRaw);
   const generatedRef = generateOpportunityRef();
 
@@ -1001,7 +1008,7 @@ export async function crearVisita(req, res) {
     }
 
     try {
-      const now = Math.floor(Date.now() / 1000);
+      const now = getGuatemalaUnixTime();
 
       const agendaPayload = {
         userownerid: Number(user.id),
