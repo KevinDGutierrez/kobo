@@ -184,7 +184,7 @@ async function reverseGeocode(lat, lon) {
   return pretty || r?.data?.display_name || null;
 }
 
-function logRid() {}
+function logRid() { }
 
 function scoreByQuery(candidateNameRaw, queryRaw) {
   const cand = normText(candidateNameRaw);
@@ -308,11 +308,8 @@ function generateOpportunityRef() {
   return `PJ${yy}${mm}${dd}${hh}${mi}${ss}${rnd}`;
 }
 
-function getGuatemalaUnixTime() {
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-  const gt = new Date(utc - 6 * 3600000);
-  return Math.floor(gt.getTime() / 1000);
+function getCurrentUnixTime() {
+  return Math.floor(Date.now() / 1000);
 }
 
 async function findThirdpartyByRef(ref) {
@@ -387,7 +384,7 @@ async function findThirdpartyByNameSmart(nombre) {
     const best = pickBest(list);
 
     if (best) return best;
-  } catch {}
+  } catch { }
 
   const limit = 50;
   let page = 0;
@@ -738,7 +735,7 @@ async function createOpportunityIfRequested({ body, tercero, note, user }) {
   ]);
 
   const fkOppStatus = mapOpportunityStatusToId(statusLabel);
-  const nowUnix = getGuatemalaUnixTime();
+  const nowUnix = getCurrentUnixTime();
   const dateEndUnix = parseDateFlexibleToUnix(dateEndRaw);
   const generatedRef = generateOpportunityRef();
 
@@ -1008,7 +1005,7 @@ export async function crearVisita(req, res) {
     }
 
     try {
-      const now = getGuatemalaUnixTime();
+      const now = getCurrentUnixTime();
 
       const agendaPayload = {
         userownerid: Number(user.id),
