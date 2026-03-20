@@ -1022,7 +1022,9 @@ export async function crearVisita(req, res) {
       if (tercero?.id) agendaPayload.socid = Number(tercero.id);
 
       if (result.contact?.contactId) {
-        agendaPayload.contactid = Number(result.contact.contactId);
+        agendaPayload.fk_contact = Number(result.contact.contactId);
+        agendaPayload.fk_element = Number(result.contact.contactId);
+        agendaPayload.elementtype = "contact";
       }
 
       const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
