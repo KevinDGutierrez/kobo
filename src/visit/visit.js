@@ -1021,32 +1021,42 @@ export async function crearVisita(req, res) {
 
       if (tercero?.id) agendaPayload.socid = Number(tercero.id);
 
+      // 1. Creamos el evento primero
       const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
+      const eventId = created.data;
 
       result.event = {
         created: true,
-        eventId: created.data,
+        eventId: eventId,
       };
+
+      if (result.contact?.contactId && eventId) {
+        try {
+          const contactId = Number(result.contact.contactId);
+          await apiClient.post(`${endpoints.agendaEventsEndpoint}/${eventId}/contact/${contactId}/external`);
+          result.contact.linkedToEvent = true;
+        } catch (linkErr) {
+          result.warnings.push("EVENTO_CREADO_PERO_CONTACTO_NO_VINCULADO");
+          console.error("Error vinculando contacto:", linkErr?.response?.data || linkErr.message);
+        }
+      }
 
       if (terceroModo === "SIN_CLIENTE") {
         try {
           const to = await getEmailForSubmitter({ body, user, rid, firstNonEmpty });
-
           if (to) {
             await sendNoClientEmail(to, {
               userLogin: user.login,
-              eventId: created.data,
+              eventId: eventId,
               nombreCliente: nombreCliente || nombreClienteNuevo,
               thirdpartyRef,
             });
-          } else {
-            result.warnings.push("NO_HAY_EMAIL_PARA_NOTIFICAR");
           }
         } catch {
           result.warnings.push("ERROR_ENVIO_CORREO");
         }
       }
-    } catch {
+    } catch (e) {
       result.event = { created: false, reason: "ERROR_CREANDO_EVENTO" };
       result.errors.push("ERROR_FLUJO_EVENTO");
     }
