@@ -1013,31 +1013,39 @@ export async function crearVisita(req, res) {
         userownerid: Number(user.id),
         type_code: "AC_RDV",
         label: "Visita de ventas",
-        note,
+        note: String(note ?? "").trim(),
         datep: now,
         datef: now,
         location: truncate128(locationText),
       };
 
-      if (tercero?.id) agendaPayload.socid = Number(tercero.id);
+      if (tercero?.id) {
+        agendaPayload.socid = Number(tercero.id);
+      }
 
-      // 1. Creamos el evento primero
       const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
-      const eventId = created.data;
+
+      const eventId = Number(created.data);
 
       result.event = {
         created: true,
         eventId: eventId,
       };
 
-      if (result.contact?.contactId && eventId) {
+
+      if (result.contact?.contactId && !isNaN(eventId)) {
         try {
           const contactId = Number(result.contact.contactId);
-          await apiClient.post(`${endpoints.agendaEventsEndpoint}/${eventId}/contact/${contactId}/external`);
+
+          const linkUrl = `${endpoints.agendaEventsEndpoint}/${eventId}/contacts/${contactId}/external`;
+
+          await apiClient.post(linkUrl);
+
           result.contact.linkedToEvent = true;
+          console.log(`[RID: ${rid}] Contacto ${contactId} vinculado con éxito al evento ${eventId}`);
         } catch (linkErr) {
           result.warnings.push("EVENTO_CREADO_PERO_CONTACTO_NO_VINCULADO");
-          console.error("Error vinculando contacto:", linkErr?.response?.data || linkErr.message);
+          console.error(`[RID: ${rid}] Error vinculando contacto:`, linkErr?.response?.data || linkErr.message);
         }
       }
 
@@ -1052,13 +1060,15 @@ export async function crearVisita(req, res) {
               thirdpartyRef,
             });
           }
-        } catch {
+        } catch (emailErr) {
           result.warnings.push("ERROR_ENVIO_CORREO");
+          console.error("Error envío correo:", emailErr.message);
         }
       }
-    } catch (e) {
+    } catch (error) {
       result.event = { created: false, reason: "ERROR_CREANDO_EVENTO" };
       result.errors.push("ERROR_FLUJO_EVENTO");
+      console.error(`[RID: ${rid}] Error crítico en flujo de agenda:`, error?.response?.data || error.message);
     }
 
     result.status = result.event?.created ? "VISITA CREADA" : "PROCESADO_CON_ERRORES";
