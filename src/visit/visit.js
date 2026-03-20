@@ -1021,9 +1021,6 @@ export async function crearVisita(req, res) {
 
       if (tercero?.id) agendaPayload.socid = Number(tercero.id);
 
-      if (contact?.contactId) agendaPayload.contactid = Number(contact.contactId);
-      
-
       const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
 
       result.event = {
