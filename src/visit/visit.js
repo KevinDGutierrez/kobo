@@ -579,45 +579,37 @@ async function ensureContactIfRequested({ body, tercero }) {
     return { attempted: false, done: false, created: false, reason: "NO_SOLICITADO" };
   }
 
-  const firstname = String(
-    firstNonEmpty(body, [
-      "datos_persona/nombre_contacto",
-      "datos_persona.nombre_contacto",
-      "nombre_contacto",
-      "dolibarr/nombre_contacto",
-      "dolibarr.nombre_contacto",
-    ]) ?? ""
-  ).trim();
+  const firstname = String(firstNonEmpty(body, [
+    "datos_persona/nombre_contacto",
+    "datos_persona.nombre_contacto",
+    "nombre_contacto",
+    "dolibarr/nombre_contacto",
+    "dolibarr.nombre_contacto",
+  ]) ?? "").trim();
 
-  const lastname = String(
-    firstNonEmpty(body, [
-      "datos_persona/apellido_contacto",
-      "datos_persona.apellido_contacto",
-      "apellido_contacto",
-      "dolibarr/apellido_contacto",
-      "dolibarr.apellido_contacto",
-    ]) ?? ""
-  ).trim();
+  const lastname = String(firstNonEmpty(body, [
+    "datos_persona/apellido_contacto",
+    "datos_persona.apellido_contacto",
+    "apellido_contacto",
+    "dolibarr/apellido_contacto",
+    "dolibarr.apellido_contacto",
+  ]) ?? "").trim();
 
-  const phone = String(
-    firstNonEmpty(body, [
-      "datos_persona/numero_contacto",
-      "datos_persona.numero_contacto",
-      "numero_contacto",
-      "dolibarr/numero_contacto",
-      "dolibarr.numero_contacto",
-    ]) ?? ""
-  ).trim();
+  const phone = String(firstNonEmpty(body, [
+    "datos_persona/numero_contacto",
+    "datos_persona.numero_contacto",
+    "numero_contacto",
+    "dolibarr/numero_contacto",
+    "dolibarr.numero_contacto",
+  ]) ?? "").trim();
 
-  const email = String(
-    firstNonEmpty(body, [
-      "datos_persona/correo_contacto",
-      "datos_persona.correo_contacto",
-      "correo_contacto",
-      "dolibarr/correo_contacto",
-      "dolibarr.correo_contacto",
-    ]) ?? ""
-  ).trim();
+  const email = String(firstNonEmpty(body, [
+    "datos_persona/correo_contacto",
+    "datos_persona.correo_contacto",
+    "correo_contacto",
+    "dolibarr/correo_contacto",
+    "dolibarr.correo_contacto",
+  ]) ?? "").trim();
 
   const desired = {
     firstname: firstname || "N/D",
@@ -641,8 +633,18 @@ async function ensureContactIfRequested({ body, tercero }) {
   if (socid && Number.isFinite(socid)) {
     const existing = await listContactsBySocid(socid);
     const exists = existing.some((c) => contactMatches(c, desired));
+
     if (exists) {
-      return { attempted: true, done: true, created: false, reason: "YA_EXISTE", linkedSocid: socid };
+      const matched = existing.find((c) => contactMatches(c, desired));
+
+      return {
+        attempted: true,
+        done: true,
+        created: false,
+        contactId: matched?.id ?? null,
+        reason: "YA_EXISTE",
+        linkedSocid: socid,
+      };
     }
   }
 
@@ -1018,6 +1020,10 @@ export async function crearVisita(req, res) {
       };
 
       if (tercero?.id) agendaPayload.socid = Number(tercero.id);
+
+      if (result.contact?.contactId) {
+        agendaPayload.contactid = Number(result.contact.contactId);
+      }
 
       const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
 
