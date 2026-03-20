@@ -1025,8 +1025,11 @@ export async function crearVisita(req, res) {
 
       if (result.contact?.contactId) {
         const contactId = Number(result.contact.contactId);
+
         agendaPayload.contact_id = contactId;
-        agendaPayload.socpeopleassigned = [{ id: contactId }];
+        agendaPayload.socpeopleassigned = {
+          [contactId]: { id: contactId }
+        };
       }
 
       const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
@@ -1061,7 +1064,10 @@ export async function crearVisita(req, res) {
     } catch (error) {
       result.event = { created: false, reason: "ERROR_CREANDO_EVENTO" };
       result.errors.push("ERROR_FLUJO_EVENTO");
-      console.error(`[RID: ${rid}] Error crítico en flujo de agenda:`, error?.response?.data || error.message);
+      console.error(
+        `[RID: ${rid}] Error crítico en flujo de agenda:`,
+        error?.response?.data || error.message
+      );
     }
 
     result.status = result.event?.created ? "VISITA CREADA" : "PROCESADO_CON_ERRORES";
