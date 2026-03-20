@@ -1023,6 +1023,12 @@ export async function crearVisita(req, res) {
         agendaPayload.socid = Number(tercero.id);
       }
 
+      if (result.contact?.contactId) {
+        const contactId = Number(result.contact.contactId);
+        agendaPayload.contact_id = contactId;
+        agendaPayload.socpeopleassigned = [{ id: contactId }];
+      }
+
       const created = await apiClient.post(endpoints.agendaEventsEndpoint, agendaPayload);
 
       const eventId = Number(created.data);
@@ -1032,21 +1038,8 @@ export async function crearVisita(req, res) {
         eventId: eventId,
       };
 
-
-      if (result.contact?.contactId && !isNaN(eventId)) {
-        try {
-          const contactId = Number(result.contact.contactId);
-
-          const linkUrl = `${endpoints.agendaEventsEndpoint}/${eventId}/contacts/${contactId}/external`;
-
-          await apiClient.post(linkUrl);
-
-          result.contact.linkedToEvent = true;
-          console.log(`[RID: ${rid}] Contacto ${contactId} vinculado con éxito al evento ${eventId}`);
-        } catch (linkErr) {
-          result.warnings.push("EVENTO_CREADO_PERO_CONTACTO_NO_VINCULADO");
-          console.error(`[RID: ${rid}] Error vinculando contacto:`, linkErr?.response?.data || linkErr.message);
-        }
+      if (result.contact?.contactId) {
+        result.contact.linkedToEvent = true;
       }
 
       if (terceroModo === "SIN_CLIENTE") {
