@@ -24,6 +24,8 @@ function normText(s) {
   return String(s ?? "")
     .toLowerCase()
     .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -193,6 +195,7 @@ function scoreByQuery(candidateNameRaw, queryRaw) {
 
   const qTokens = splitTokens(q);
   const cTokens = new Set(splitTokens(cand));
+  const cList = splitTokens(cand);
 
   let score = 0;
 
@@ -200,11 +203,30 @@ function scoreByQuery(candidateNameRaw, queryRaw) {
   if (cand.startsWith(q)) score += 200;
 
   for (const tk of qTokens) {
-    if (cTokens.has(tk)) score += 120;
-    else score -= 250;
+    if (cTokens.has(tk)) {
+      score += 120;
+    } else {
+      // Check for partial matches or joined words
+      let foundPartial = false;
+      for (const ct of cList) {
+        if (ct.includes(tk) || tk.includes(ct)) {
+          score += 70;
+          foundPartial = true;
+          break;
+        }
+      }
+      if (!foundPartial) score -= 150;
+    }
   }
 
   if (qTokens.length && qTokens.every((t) => cTokens.has(t))) score += 200;
+
+  // Compact comparison for cases like "Tu Origen" vs "TuOrigen"
+  const candCompact = cand.replace(/\s+/g, "");
+  const qCompact = q.replace(/\s+/g, "");
+  if (candCompact.includes(qCompact) || qCompact.includes(candCompact)) {
+    score += 300;
+  }
 
   return score;
 }
@@ -287,10 +309,10 @@ function parseDateFlexibleToUnix(raw) {
 function mapOpportunityStatusToId(label) {
   const s = normText(label);
   if (!s) return null;
-  if (s === "prospeccion" || s === "prospección") return 1;
-  if (s === "cualificacion" || s === "cualificación") return 2;
+  if (s === "prospeccion") return 1;
+  if (s === "cualificacion") return 2;
   if (s === "presupuesto") return 3;
-  if (s === "negociacion" || s === "negociación") return 4;
+  if (s === "negociacion") return 4;
   if (s === "ganado") return 6;
   if (s === "perdido") return 7;
   return null;
@@ -376,7 +398,14 @@ async function findThirdpartyByNameSmart(nombre) {
   }
 
   try {
-    const like = `%${query}%`;
+    const qTokens = splitTokens(query);
+    let like = `%${query}%`;
+
+    // If query has multiple words, try a more flexible LIKE first
+    if (qTokens.length > 1) {
+      like = `%${qTokens.join("%")}%`;
+    }
+
     const url = `${endpoints.thirdpartiesEndpoint}?sqlfilters=(t.nom:like:${encodeURIComponent(like)})`;
 
     const res = await apiClient.get(url);
